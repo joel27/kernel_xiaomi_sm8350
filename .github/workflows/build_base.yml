@@ -54,6 +54,16 @@ jobs:
           cp configs/star_defconfig arch/arm64/configs/star_defconfig
           echo "✅ star_defconfig copiado correctamente"
 
+      - name: Fix sucompat.c function names
+        run: |
+          if [ -f drivers/kernelsu/sucompat.c ]; then
+            sed -i 's/execve_handler_pre/sys_execve_handler_pre/g' drivers/kernelsu/sucompat.c
+            sed -i 's/faccessat_handler_pre/sys_faccessat_handler_pre/g' drivers/kernelsu/sucompat.c
+            sed -i 's/newfstatat_handler_pre/sys_newfstatat_handler_pre/g' drivers/kernelsu/sucompat.c
+            sed -i 's/pts_unix98_lookup_kp/pts_unix98_lookup_pre/g' drivers/kernelsu/sucompat.c
+            echo "✅ sucompat.c corregido"
+          fi
+
       - name: Build kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
