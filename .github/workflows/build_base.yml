@@ -59,7 +59,7 @@ jobs:
             | bash -s main
           echo "KernelSU estándar añadido"
 
-      - name: Apply QGKI 5.4 fixes
+      - name: Apply QGKI 5.4 fixes (completos)
         run: |
           echo "=== FIX 1: pgtable.h ==="
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | while read f; do
@@ -103,6 +103,45 @@ jobs:
                       "void ksu_seccomp_cache_init(void) {}\n"
                   )
               print("  FIXED seccomp_cache.c")
+          PYEOF
+
+          echo "=== FIX 6: pkg_observer.c fsnotify ==="
+          python3 - << 'PYEOF'
+          import re, os
+          pkg = "drivers/kernelsu/manager/pkg_observer.c"
+          if not os.path.exists(pkg):
+              exit(0)
+          with open(pkg, "r") as f:
+              content = f.read()
+          content = content.replace('.handle_inode_event =', '.handle_event =')
+          old_fn = re.compile(
+              r'static int (ksu_handle_inode_event|ksu_handle_event)\s*\('
+              r'\s*struct fsnotify_mark\s*\*\s*\w+\s*,'
+              r'\s*u32\s*\w+\s*,'
+              r'\s*struct inode\s*\*\s*\w+\s*,'
+              r'\s*struct inode\s*\*\s*\w+\s*,'
+              r'\s*const struct qstr\s*\*\s*\w+\s*,'
+              r'\s*u32\s*\w+\s*\)',
+              re.DOTALL
+          )
+          new_fn = (
+              'static int ksu_handle_event('
+              'struct fsnotify_group *group, struct inode *inode, '
+              'u32 mask, const void *data, int data_type, '
+              'const struct qstr *file_name, u32 cookie, '
+              'struct fsnotify_iter_info *iter_info)'
+          )
+          if old_fn.search(content):
+              content = old_fn.sub(new_fn, content)
+          else:
+              content = re.sub(
+                  r'static int ksu_handle_inode_event\b',
+                  'static int ksu_handle_event', content
+              )
+          content = content.replace('ksu_handle_inode_event', 'ksu_handle_event')
+          with open(pkg, "w") as f:
+              f.write(content)
+          print("  FIXED pkg_observer.c")
           PYEOF
 
           echo "✅ Fixes aplicados"
