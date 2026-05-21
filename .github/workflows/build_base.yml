@@ -144,6 +144,17 @@ jobs:
           print("  FIXED pkg_observer.c")
           PYEOF
 
+          echo "=== FIX 7: allowlist.c (TWA_RESUME y put_task_struct) ==="
+          # Corregir TWA_RESUME reemplazando por 0
+          if [ -f drivers/kernelsu/policy/allowlist.c ]; then
+            sed -i 's/TWA_RESUME/0/g' drivers/kernelsu/policy/allowlist.c
+            # Añadir include faltante para put_task_struct
+            if ! grep -q '<linux/sched/task.h>' drivers/kernelsu/policy/allowlist.c; then
+              sed -i '1i#include <linux/sched/task.h>' drivers/kernelsu/policy/allowlist.c
+            fi
+            echo "  FIXED allowlist.c"
+          fi
+
           echo "✅ Fixes aplicados"
 
       - name: Add Xiaomi missing symbols stubs
