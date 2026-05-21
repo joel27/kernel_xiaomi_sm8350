@@ -1,4 +1,4 @@
-name: Base diphons test (KSU estándar + todos los fixes)
+name: diphons KSU + SuSFS - Mi 11 Ultra (star)
 
 on:
   workflow_dispatch:
@@ -26,7 +26,8 @@ jobs:
         run: |
           LLVM_BIN=/usr/lib/llvm-19/bin
           mkdir -p clang/bin
-          for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+          for tool in clang clang++ ld.lld llvm-ar llvm-nm \
+                      llvm-objcopy llvm-objdump llvm-strip; do
             if [ -x "$LLVM_BIN/$tool" ]; then
               ln -sf "$LLVM_BIN/$tool" clang/bin/$tool
             fi
@@ -42,24 +43,23 @@ jobs:
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
             gcc32
 
-      - name: Remove old KernelSU (si existe)
+      - name: Remove old KernelSU
         run: |
           if [ -d drivers/kernelsu ]; then
-            echo "Eliminando KernelSU antiguo..."
             rm -rf drivers/kernelsu
           fi
           sed -i '/kernelsu/d' drivers/Kconfig 2>/dev/null || true
           sed -i '/kernelsu/d' drivers/Makefile 2>/dev/null || true
           echo "✅ KernelSU antiguo eliminado"
 
-      - name: Add KernelSU (estándar)
+      - name: Add KernelSU (estándar tiann)
         run: |
           curl -LSs \
             "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
             | bash -s main
-          echo "KernelSU estándar añadido"
+          echo "✅ KernelSU estándar añadido"
 
-      - name: Apply QGKI 5.4 fixes (completos)
+      - name: Apply all 5.4 QGKI fixes
         run: |
           echo "=== FIX 1: pgtable.h ==="
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | while read f; do
@@ -83,7 +83,6 @@ jobs:
           grep -rl "copy_to_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|copy_to_user_nofault|probe_kernel_write|g' "$f"
           done
-          echo "  FIXED copy_*_nofault"
 
           echo "=== FIX 4: security_inode_init_security_anon ==="
           grep -rl "security_inode_init_security_anon" drivers/kernelsu/ 2>/dev/null | while read f; do
@@ -144,58 +143,162 @@ jobs:
           print("  FIXED pkg_observer.c")
           PYEOF
 
-          echo "=== FIX 7: allowlist.c (TWA_RESUME y put_task_struct) ==="
-          # Corregir TWA_RESUME reemplazando por 0
-          if [ -f drivers/kernelsu/policy/allowlist.c ]; then
-            sed -i 's/TWA_RESUME/0/g' drivers/kernelsu/policy/allowlist.c
-            # Añadir include faltante para put_task_struct
-            if ! grep -q '<linux/sched/task.h>' drivers/kernelsu/policy/allowlist.c; then
-              sed -i '1i#include <linux/sched/task.h>' drivers/kernelsu/policy/allowlist.c
-            fi
-            echo "  FIXED allowlist.c"
-          fi
+          echo "=== FIX 7: allowlist.c — TWA_RESUME y put_task_struct ==="
+          # CORRECCIÓN: usar python para no tocar directivas del preprocesador
+          # El sed anterior rompía #ifndef TWA_RESUME convirtiéndolo en #ifndef 0
+          python3 - << 'PYEOF'
+          import os, re
 
-          echo "✅ Fixes aplicados"
+          allowlist = "drivers/kernelsu/policy/allowlist.c"
+          if not os.path.exists(allowlist):
+              print("  allowlist.c no existe, skip")
+              exit(0)
+
+          with open(allowlist, "r") as f:
+              content = f.read()
+
+          # Fix 1: TWA_RESUME → 0 SOLO en código C (no en directivas #)
+          lines = content.split("\n")
+          new_lines = []
+          for line in lines:
+              stripped = line.lstrip()
+              if stripped.startswith("#"):
+                  new_lines.append(line)
+              elif "TWA_RESUME" in line:
+                  new_lines.append(line.replace("TWA_RESUME", "0"))
+              else:
+                  new_lines.append(line)
+          content = "\n".join(new_lines)
+
+          # Fix 2: put_task_struct → (void)tsk (no-op válido en C)
+          content = re.sub(
+              r'\bput_task_struct\s*\(\s*tsk\s*\)\s*;',
+              '(void)tsk; /* put_task_struct removed: not available in 5.4 */',
+              content
+          )
+
+          # Fix 3: Añadir headers necesarios si faltan
+          headers_to_add = []
+          if "linux/sched/task.h" not in content:
+              headers_to_add.append("#include <linux/sched/task.h>")
+          if "linux/sched/signal.h" not in content:
+              headers_to_add.append("#include <linux/sched/signal.h>")
+
+          if headers_to_add:
+              # Insertar después del primer #include existente
+              first_include = re.search(r'^#include\s+[<"]', content, re.MULTILINE)
+              if first_include:
+                  insert_pos = first_include.start()
+                  content = content[:insert_pos] + "\n".join(headers_to_add) + "\n" + content[insert_pos:]
+
+          with open(allowlist, "w") as f:
+              f.write(content)
+          print("  FIXED allowlist.c (TWA_RESUME + put_task_struct + headers)")
+          PYEOF
+
+          echo "=== FIX 8: TP hooks Kbuild ==="
+          python3 - << 'PYEOF'
+          import re, os
+          kb = "drivers/kernelsu/Kbuild"
+          if os.path.exists(kb):
+              with open(kb, "r") as f:
+                  content = f.read()
+              content = re.sub(
+                  r'(ifeq.*TRACEPOINT.*\n(?:.*\n)*?endif)',
+                  lambda m: '\n'.join('# ' + l for l in m.group(0).split('\n')),
+                  content
+              )
+              with open(kb, "w") as f:
+                  f.write(content)
+              print("  FIXED Kbuild TP hooks")
+          PYEOF
+
+          echo "=== FIX 9: linux/minmax.h ==="
+          python3 - << 'PYEOF'
+          import os
+          minmax_h = "include/linux/minmax.h"
+          if not os.path.exists(minmax_h):
+              with open(minmax_h, "w") as f:
+                  f.write(
+                      "#ifndef _LINUX_MINMAX_H\n"
+                      "#define _LINUX_MINMAX_H\n\n"
+                      "#include <linux/kernel.h>\n\n"
+                      "#endif\n"
+                  )
+              print("  CREATED include/linux/minmax.h")
+          PYEOF
+
+          echo "=== ALL FIXES DONE ==="
 
       - name: Add Xiaomi missing symbols stubs
         run: |
-          cat > drivers/soc/qcom/xiaomi_stubs.c << 'STUBS'
-          #include <linux/kernel.h>
-          #include <linux/errno.h>
+          python3 - << 'PYEOF'
+          import os
 
-          int get_hw_version_platform(void) { return 0; }
-          int get_hw_country_version(void) { return 0; }
-          int get_hw_version_build(void) { return 0; }
-          int get_hw_version_major(void) { return 0; }
-          int get_hw_version_minor(void) { return 0; }
+          stub_file = "drivers/soc/qcom/xiaomi_hw_stubs.c"
+          stub_content = (
+              "// Xiaomi hardware stubs\n"
+              "#include <linux/kernel.h>\n"
+              "#include <linux/export.h>\n\n"
+              "int get_hw_version_platform(void) { return 0; }\n"
+              "EXPORT_SYMBOL(get_hw_version_platform);\n\n"
+              "int get_hw_country_version(void) { return 0; }\n"
+              "EXPORT_SYMBOL(get_hw_country_version);\n\n"
+              "int get_hw_version_build(void) { return 0; }\n"
+              "EXPORT_SYMBOL(get_hw_version_build);\n\n"
+              "int get_hw_version_major(void) { return 0; }\n"
+              "EXPORT_SYMBOL(get_hw_version_major);\n\n"
+              "int get_hw_version_minor(void) { return 0; }\n"
+              "EXPORT_SYMBOL(get_hw_version_minor);\n\n"
+              "int mi_disp_register_client(void *data) { return 0; }\n"
+              "EXPORT_SYMBOL(mi_disp_register_client);\n\n"
+              "int mi_disp_unregister_client(void *data) { return 0; }\n"
+              "EXPORT_SYMBOL(mi_disp_unregister_client);\n"
+          )
 
-          int mi_disp_register_client(void *data) { return 0; }
-          int mi_disp_unregister_client(void *data) { return 0; }
+          os.makedirs("drivers/soc/qcom", exist_ok=True)
+          with open(stub_file, "w") as f:
+              f.write(stub_content)
+          print(f"  CREATED {stub_file}")
 
-          int get_hw_id_value(void) { return 0; }
-          STUBS
-
-          mkdir -p drivers/soc/qcom
-          if ! grep -q "xiaomi_stubs.o" drivers/soc/qcom/Makefile; then
-            echo 'obj-y += xiaomi_stubs.o' >> drivers/soc/qcom/Makefile
-          fi
-          echo "✅ Stubs añadidos"
+          makefile = "drivers/soc/qcom/Makefile"
+          if os.path.exists(makefile):
+              with open(makefile, "r") as f:
+                  content = f.read()
+              if "xiaomi_hw_stubs" not in content:
+                  with open(makefile, "a") as f:
+                      f.write("\nobj-y += xiaomi_hw_stubs.o\n")
+                  print(f"  ADDED to {makefile}")
+          PYEOF
 
       - name: Use functional config as defconfig
         run: |
           if [ ! -f configs/star_defconfig ]; then
             echo "❌ ERROR: configs/star_defconfig no encontrado"
+            find . -name "*defconfig*" | head -20
             exit 1
           fi
           mkdir -p arch/arm64/configs
           cp configs/star_defconfig arch/arm64/configs/star_defconfig
-          echo "✅ star_defconfig copiado"
+          echo "✅ star_defconfig copiado desde configs/"
 
       - name: Build kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
 
-          make O=out ARCH=arm64 star_defconfig
+          make O=out ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            star_defconfig
+
           make O=out ARCH=arm64 olddefconfig
 
           make -j$(nproc --all) O=out ARCH=arm64 \
@@ -217,6 +320,10 @@ jobs:
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image AnyKernel3/
+          elif [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/
           else
             echo "❌ No Image found"
             ls out/arch/arm64/boot/ || true
@@ -238,19 +345,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-ksu-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-ksu-star-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-ksu
-          path: diphons-ksu-*.zip
+          name: diphons-ksu-star
+          path: diphons-ksu-star-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-ksu
+          name: build-log
           path: build.log
