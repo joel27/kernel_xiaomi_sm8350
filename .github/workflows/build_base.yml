@@ -1,4 +1,4 @@
-name: Base diphons test (KSU estándar + fix pgtable)
+name: Base diphons test (KSU estándar + fixes)
 
 on:
   workflow_dispatch:
@@ -59,14 +59,21 @@ jobs:
             | bash -s main
           echo "KernelSU estándar añadido"
 
-      - name: Fix pgtable.h for QGKI 5.4
+      - name: Apply QGKI 5.4 fixes
         run: |
-          echo "=== Fix pgtable.h ==="
+          echo "=== FIX 1: pgtable.h ==="
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$f"
             echo "  FIXED $f"
           done
-          echo "✅ pgtable.h corregido"
+
+          echo "=== FIX 2: strncpy_from_user_nofault ==="
+          grep -rl "strncpy_from_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|strncpy_from_user_nofault|strncpy_from_user|g' "$f"
+            echo "  FIXED $f"
+          done
+
+          echo "✅ Fixes aplicados"
 
       - name: Add Xiaomi missing symbols stubs
         run: |
