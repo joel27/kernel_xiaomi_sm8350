@@ -233,30 +233,6 @@ jobs:
 
           echo "✅ Todos los fixes aplicados"
 
-      - name: Add Xiaomi missing symbols stubs
-        run: |
-          cat > drivers/soc/qcom/xiaomi_stubs.c << 'STUBS'
-          #include <linux/kernel.h>
-          #include <linux/errno.h>
-
-          int get_hw_version_platform(void) { return 0; }
-          int get_hw_country_version(void) { return 0; }
-          int get_hw_version_build(void) { return 0; }
-          int get_hw_version_major(void) { return 0; }
-          int get_hw_version_minor(void) { return 0; }
-
-          int mi_disp_register_client(void *data) { return 0; }
-          int mi_disp_unregister_client(void *data) { return 0; }
-
-          int get_hw_id_value(void) { return 0; }
-          STUBS
-
-          mkdir -p drivers/soc/qcom
-          if ! grep -q "xiaomi_stubs.o" drivers/soc/qcom/Makefile; then
-            echo 'obj-y += xiaomi_stubs.o' >> drivers/soc/qcom/Makefile
-          fi
-          echo "✅ Stubs añadidos"
-
       - name: Use functional config as defconfig
         run: |
           if [ ! -f configs/star_defconfig ]; then
