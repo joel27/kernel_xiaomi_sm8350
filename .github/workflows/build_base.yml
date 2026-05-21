@@ -196,7 +196,7 @@ jobs:
               print("  FIXED app_profile.c")
           PYEOF
 
-          echo "=== FIX 9: SELinux stubs (incompatible con 5.4 QGKI) ==="
+          echo "=== FIX 9: SELinux stubs (rules.c, sepolicy.c) ==="
           python3 - << 'PYEOF'
           import os
           selinux_dir = "drivers/kernelsu/selinux"
@@ -210,7 +210,7 @@ jobs:
                       print(f"  FIXED {fn}")
           PYEOF
 
-          echo "=== FIX 10: supercall stubs (incompatible con 5.4 QGKI) ==="
+          echo "=== FIX 10: supercall stubs ==="
           python3 - << 'PYEOF'
           import os, glob
           supercall_dir = "drivers/kernelsu/supercall"
@@ -221,6 +221,15 @@ jobs:
                       f.write(stub)
                   print(f"  FIXED {c_file}")
           PYEOF
+
+          echo "=== FIX 11: selinux_hide.c stub ==="
+          if [ -f drivers/kernelsu/feature/selinux_hide.c ]; then
+            cat > drivers/kernelsu/feature/selinux_hide.c << 'STUB'
+          // Stub for kernel 5.4 QGKI compatibility
+          #include <linux/kernel.h>
+          STUB
+            echo "  FIXED selinux_hide.c"
+          fi
 
           echo "✅ Todos los fixes aplicados"
 
