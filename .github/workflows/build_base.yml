@@ -1,4 +1,4 @@
-name: Base diphons test (KSU estándar + fixes)
+name: Base diphons test (KSU estándar + fixes completos)
 
 on:
   workflow_dispatch:
@@ -84,6 +84,12 @@ jobs:
             sed -i 's|copy_to_user_nofault|probe_kernel_write|g' "$f"
           done
           echo "  FIXED copy_*_nofault"
+
+          echo "=== FIX 4: security_inode_init_security_anon ==="
+          grep -rl "security_inode_init_security_anon" drivers/kernelsu/ 2>/dev/null | while read f; do
+            perl -0pi -e 's/security_inode_init_security_anon\([^;]*\)/0/g' "$f"
+            echo "  FIXED $f"
+          done
 
           echo "✅ Fixes aplicados"
 
