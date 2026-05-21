@@ -1,4 +1,4 @@
-name: Base diphons test (KSU estándar)
+name: Base diphons test (KSU estándar + fix pgtable)
 
 on:
   workflow_dispatch:
@@ -48,7 +48,6 @@ jobs:
             echo "Eliminando KernelSU antiguo..."
             rm -rf drivers/kernelsu
           fi
-          # Limpiar también posibles referencias en Kconfig/Makefile
           sed -i '/kernelsu/d' drivers/Kconfig 2>/dev/null || true
           sed -i '/kernelsu/d' drivers/Makefile 2>/dev/null || true
           echo "✅ KernelSU antiguo eliminado"
@@ -59,6 +58,15 @@ jobs:
             "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
             | bash -s main
           echo "KernelSU estándar añadido"
+
+      - name: Fix pgtable.h for QGKI 5.4
+        run: |
+          echo "=== Fix pgtable.h ==="
+          grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$f"
+            echo "  FIXED $f"
+          done
+          echo "✅ pgtable.h corregido"
 
       - name: Add Xiaomi missing symbols stubs
         run: |
