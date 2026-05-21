@@ -1,4 +1,4 @@
-name: Base diphons test (KSU estándar + fixes completos)
+name: Base diphons test (KSU estándar + todos los fixes)
 
 on:
   workflow_dispatch:
@@ -90,6 +90,20 @@ jobs:
             perl -0pi -e 's/security_inode_init_security_anon\([^;]*\)/0/g' "$f"
             echo "  FIXED $f"
           done
+
+          echo "=== FIX 5: seccomp_cache.c stub ==="
+          python3 - << 'PYEOF'
+          import os
+          sc = "drivers/kernelsu/infra/seccomp_cache.c"
+          if os.path.exists(sc):
+              with open(sc, "w") as f:
+                  f.write(
+                      "#include \"seccomp_cache.h\"\n"
+                      "void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr) {}\n"
+                      "void ksu_seccomp_cache_init(void) {}\n"
+                  )
+              print("  FIXED seccomp_cache.c")
+          PYEOF
 
           echo "✅ Fixes aplicados"
 
