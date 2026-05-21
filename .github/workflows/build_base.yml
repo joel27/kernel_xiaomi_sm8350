@@ -160,7 +160,6 @@ jobs:
           fi
 
           echo "=== FIX 9: SELinux stubs (incompatible con 5.4 QGKI) ==="
-          # Sobrescribir rules.c y sepolicy.c con stubs vacíos
           python3 - << 'PYEOF'
           import os
           selinux_dir = "drivers/kernelsu/selinux"
@@ -173,6 +172,20 @@ jobs:
                           f.write(stub)
                       print(f"  FIXED {fn}")
           PYEOF
+
+          echo "=== FIX 10: linux/minmax.h ==="
+          mkdir -p include/linux
+          if [ ! -f include/linux/minmax.h ]; then
+            cat > include/linux/minmax.h << 'EOF'
+          #ifndef _LINUX_MINMAX_H
+          #define _LINUX_MINMAX_H
+
+          #include <linux/kernel.h>
+
+          #endif
+          EOF
+            echo "  CREATED include/linux/minmax.h"
+          fi
 
           echo "✅ Todos los fixes aplicados"
 
