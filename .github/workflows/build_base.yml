@@ -1,4 +1,4 @@
-name: Base diphons test (sin KSU/SuSFS)
+name: Base diphons test (KSU estándar)
 
 on:
   workflow_dispatch:
@@ -42,27 +42,57 @@ jobs:
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
             gcc32
 
+      - name: Remove old KernelSU (si existe)
+        run: |
+          if [ -d drivers/kernelsu ]; then
+            echo "Eliminando KernelSU antiguo..."
+            rm -rf drivers/kernelsu
+          fi
+          # Limpiar también posibles referencias en Kconfig/Makefile
+          sed -i '/kernelsu/d' drivers/Kconfig 2>/dev/null || true
+          sed -i '/kernelsu/d' drivers/Makefile 2>/dev/null || true
+          echo "✅ KernelSU antiguo eliminado"
+
+      - name: Add KernelSU (estándar)
+        run: |
+          curl -LSs \
+            "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
+            | bash -s main
+          echo "KernelSU estándar añadido"
+
+      - name: Add Xiaomi missing symbols stubs
+        run: |
+          cat > drivers/soc/qcom/xiaomi_stubs.c << 'STUBS'
+          #include <linux/kernel.h>
+          #include <linux/errno.h>
+
+          int get_hw_version_platform(void) { return 0; }
+          int get_hw_country_version(void) { return 0; }
+          int get_hw_version_build(void) { return 0; }
+          int get_hw_version_major(void) { return 0; }
+          int get_hw_version_minor(void) { return 0; }
+
+          int mi_disp_register_client(void *data) { return 0; }
+          int mi_disp_unregister_client(void *data) { return 0; }
+
+          int get_hw_id_value(void) { return 0; }
+          STUBS
+
+          mkdir -p drivers/soc/qcom
+          if ! grep -q "xiaomi_stubs.o" drivers/soc/qcom/Makefile; then
+            echo 'obj-y += xiaomi_stubs.o' >> drivers/soc/qcom/Makefile
+          fi
+          echo "✅ Stubs añadidos"
+
       - name: Use functional config as defconfig
         run: |
-          # Verificar que el archivo existe en la rama actual
           if [ ! -f configs/star_defconfig ]; then
-            echo "❌ ERROR: configs/star_defconfig no encontrado en el repositorio"
-            echo "Asegúrate de haber subido el archivo a la carpeta configs en la rama 15"
+            echo "❌ ERROR: configs/star_defconfig no encontrado"
             exit 1
           fi
           mkdir -p arch/arm64/configs
           cp configs/star_defconfig arch/arm64/configs/star_defconfig
-          echo "✅ star_defconfig copiado correctamente"
-
-      - name: Fix sucompat.c function names
-        run: |
-          if [ -f drivers/kernelsu/sucompat.c ]; then
-            sed -i 's/execve_handler_pre/sys_execve_handler_pre/g' drivers/kernelsu/sucompat.c
-            sed -i 's/faccessat_handler_pre/sys_faccessat_handler_pre/g' drivers/kernelsu/sucompat.c
-            sed -i 's/newfstatat_handler_pre/sys_newfstatat_handler_pre/g' drivers/kernelsu/sucompat.c
-            sed -i 's/pts_unix98_lookup_kp/pts_unix98_lookup_pre/g' drivers/kernelsu/sucompat.c
-            echo "✅ sucompat.c corregido"
-          fi
+          echo "✅ star_defconfig copiado"
 
       - name: Build kernel
         run: |
@@ -111,19 +141,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-base-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-ksu-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-base
-          path: diphons-base-*.zip
+          name: diphons-ksu
+          path: diphons-ksu-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-base
+          name: build-log-ksu
           path: build.log
