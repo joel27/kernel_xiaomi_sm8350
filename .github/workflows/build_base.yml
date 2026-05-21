@@ -73,6 +73,18 @@ jobs:
             echo "  FIXED $f"
           done
 
+          echo "=== FIX 3: copy_*_nofault ==="
+          grep -rl "copy_to_kernel_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|copy_to_kernel_nofault|probe_kernel_write|g' "$f"
+          done
+          grep -rl "copy_from_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|copy_from_user_nofault|probe_kernel_read|g' "$f"
+          done
+          grep -rl "copy_to_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|copy_to_user_nofault|probe_kernel_write|g' "$f"
+          done
+          echo "  FIXED copy_*_nofault"
+
           echo "✅ Fixes aplicados"
 
       - name: Add Xiaomi missing symbols stubs
