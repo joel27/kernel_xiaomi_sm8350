@@ -202,6 +202,18 @@ jobs:
                       print(f"  FIXED {fn}")
           PYEOF
 
+          echo "=== FIX 10: supercall stubs (incompatible con 5.4 QGKI) ==="
+          python3 - << 'PYEOF'
+          import os, glob
+          supercall_dir = "drivers/kernelsu/supercall"
+          if os.path.isdir(supercall_dir):
+              stub = "// Stub for kernel 5.4 QGKI compatibility\n#include <linux/kernel.h>\n"
+              for c_file in glob.glob(f"{supercall_dir}/*.c"):
+                  with open(c_file, "w") as f:
+                      f.write(stub)
+                  print(f"  FIXED {c_file}")
+          PYEOF
+
           echo "✅ Todos los fixes aplicados"
 
       - name: Add Xiaomi missing symbols stubs
