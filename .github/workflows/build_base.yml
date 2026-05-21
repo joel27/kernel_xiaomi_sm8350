@@ -183,10 +183,18 @@ jobs:
           fi
 
           echo "=== FIX 8: app_profile.c (seccomp.filter_count) ==="
-          if [ -f drivers/kernelsu/policy/app_profile.c ]; then
-            sed -i '/atomic_set(&current->seccomp.filter_count, 0);/d' drivers/kernelsu/policy/app_profile.c
-            echo "  FIXED app_profile.c"
-          fi
+          python3 - << 'PYEOF'
+          import os
+          app = "drivers/kernelsu/policy/app_profile.c"
+          if os.path.exists(app):
+              with open(app, "r") as f:
+                  lines = f.readlines()
+              with open(app, "w") as f:
+                  for line in lines:
+                      if "filter_count" not in line:
+                          f.write(line)
+              print("  FIXED app_profile.c")
+          PYEOF
 
           echo "=== FIX 9: SELinux stubs (incompatible con 5.4 QGKI) ==="
           python3 - << 'PYEOF'
