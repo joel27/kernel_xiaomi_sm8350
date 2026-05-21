@@ -44,10 +44,15 @@ jobs:
 
       - name: Use functional config as defconfig
         run: |
-          # Descarga el config que subiste a tu fork
-          wget https://raw.githubusercontent.com/${{ github.repository }}/main/configs/star_defconfig
+          # Verificar que el archivo existe en la rama actual
+          if [ ! -f configs/star_defconfig ]; then
+            echo "❌ ERROR: configs/star_defconfig no encontrado en el repositorio"
+            echo "Asegúrate de haber subido el archivo a la carpeta configs en la rama 15"
+            exit 1
+          fi
           mkdir -p arch/arm64/configs
-          cp star_defconfig arch/arm64/configs/star_defconfig
+          cp configs/star_defconfig arch/arm64/configs/star_defconfig
+          echo "✅ star_defconfig copiado correctamente"
 
       - name: Build kernel
         run: |
