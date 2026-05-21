@@ -1,4 +1,4 @@
-name: Base diphons test (KSU estándar + todos los fixes)
+name: Base diphons test (KSU + todos los fixes)
 
 on:
   workflow_dispatch:
@@ -41,6 +41,35 @@ jobs:
           git clone --depth=1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
             gcc32
+
+      - name: Fix missing linux/minmax.h (ANTES de KSU)
+        run: |
+          mkdir -p include/linux
+          cat > include/linux/minmax.h << 'EOF'
+          #ifndef _LINUX_MINMAX_H
+          #define _LINUX_MINMAX_H
+
+          #include <linux/kernel.h>
+
+          #ifndef min
+          #define min(x, y) ({                \
+            typeof(x) _min1 = (x);            \
+            typeof(y) _min2 = (y);            \
+            (void) (&_min1 == &_min2);        \
+            _min1 < _min2 ? _min1 : _min2; })
+          #endif
+
+          #ifndef max
+          #define max(x, y) ({                \
+            typeof(x) _max1 = (x);            \
+            typeof(y) _max2 = (y);            \
+            (void) (&_max1 == &_max2);        \
+            _max1 > _max2 ? _max1 : _max2; })
+          #endif
+
+          #endif
+          EOF
+          echo "✅ minmax.h creado"
 
       - name: Remove old KernelSU (si existe)
         run: |
@@ -172,20 +201,6 @@ jobs:
                           f.write(stub)
                       print(f"  FIXED {fn}")
           PYEOF
-
-          echo "=== FIX 10: linux/minmax.h ==="
-          mkdir -p include/linux
-          if [ ! -f include/linux/minmax.h ]; then
-            cat > include/linux/minmax.h << 'EOF'
-          #ifndef _LINUX_MINMAX_H
-          #define _LINUX_MINMAX_H
-
-          #include <linux/kernel.h>
-
-          #endif
-          EOF
-            echo "  CREATED include/linux/minmax.h"
-          fi
 
           echo "✅ Todos los fixes aplicados"
 
