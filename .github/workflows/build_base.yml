@@ -1,0 +1,114 @@
+name: Base diphons test (sin KSU/SuSFS)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            git bc bison flex libssl-dev \
+            make libelf-dev python3 \
+            zip curl wget cpio \
+            clang-19 lld-19 llvm-19
+
+      - name: Setup Clang 19 toolchain
+        run: |
+          LLVM_BIN=/usr/lib/llvm-19/bin
+          mkdir -p clang/bin
+          for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+            if [ -x "$LLVM_BIN/$tool" ]; then
+              ln -sf "$LLVM_BIN/$tool" clang/bin/$tool
+            fi
+          done
+          clang/bin/clang --version
+
+      - name: Setup GCC toolchain
+        run: |
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
+            gcc64
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
+            gcc32
+
+      - name: Use functional config as defconfig
+        run: |
+          # Descarga el config que subiste a tu fork
+          wget https://raw.githubusercontent.com/${{ github.repository }}/main/configs/star_defconfig
+          mkdir -p arch/arm64/configs
+          cp star_defconfig arch/arm64/configs/star_defconfig
+
+      - name: Build kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+
+          make O=out ARCH=arm64 star_defconfig
+          make O=out ARCH=arm64 olddefconfig
+
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            2>&1 | tee build.log
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image AnyKernel3/
+          else
+            echo "❌ No Image found"
+            ls out/arch/arm64/boot/ || true
+            exit 1
+          fi
+
+          if [ -f out/arch/arm64/boot/dtbo.img ]; then
+            cp out/arch/arm64/boot/dtbo.img AnyKernel3/
+          fi
+
+          sed -i 's|do.devicecheck=1|do.devicecheck=0|g' AnyKernel3/anykernel.sh
+          grep -q "^BLOCK=" AnyKernel3/anykernel.sh && \
+            sed -i 's|^BLOCK=.*|BLOCK=boot;|g' AnyKernel3/anykernel.sh || \
+            echo 'BLOCK=boot;' >> AnyKernel3/anykernel.sh
+          grep -q "IS_SLOT_DEVICE=" AnyKernel3/anykernel.sh && \
+            sed -i 's|IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1;|g' AnyKernel3/anykernel.sh || \
+            echo 'IS_SLOT_DEVICE=1;' >> AnyKernel3/anykernel.sh
+          grep -q "device.name1=" AnyKernel3/anykernel.sh && \
+            sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
+
+          cd AnyKernel3
+          zip -r9 ../diphons-base-$(date +%Y%m%d-%H%M).zip . \
+            -x ".git*" -x "*.md"
+
+      - name: Upload kernel zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: diphons-base
+          path: diphons-base-*.zip
+          retention-days: 7
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-base
+          path: build.log
