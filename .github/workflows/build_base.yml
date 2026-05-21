@@ -1,4 +1,4 @@
-name: Base diphons test (KSU + todos los fixes)
+name: Base diphons test (KSU + SuSFS + todos los fixes)
 
 on:
   workflow_dispatch:
@@ -87,6 +87,51 @@ jobs:
             "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
             | bash -s main
           echo "KernelSU estándar añadido"
+
+      - name: Add SuSFS (kernel-5.4)
+        run: |
+          git clone --depth=1 \
+            https://gitlab.com/simonpunk/susfs4ksu.git \
+            -b kernel-5.4 \
+            ../susfs4ksu
+          SUSFS_DIR="../susfs4ksu/kernel_patches"
+
+          # Copiar archivos base
+          cp "$SUSFS_DIR/fs/susfs.c" fs/susfs.c
+          cp "$SUSFS_DIR/include/linux/susfs.h" include/linux/susfs.h
+          cp "$SUSFS_DIR/include/linux/susfs_def.h" include/linux/susfs_def.h
+
+          # Añadir headers necesarios
+          if ! grep -q "linux/cred.h" include/linux/susfs_def.h; then
+            sed -i '1i#include <linux/cred.h>' include/linux/susfs_def.h
+          fi
+          if ! grep -q "linux/version.h" include/linux/susfs.h; then
+            sed -i '1i#include <linux/version.h>' include/linux/susfs.h
+          fi
+
+          # Registrar en fs/Makefile
+          if ! grep -q "susfs.o" fs/Makefile; then
+            sed -i '/obj-y.*+=/a obj-\$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          fi
+
+          # Aplicar parches de SuSFS para KSU (50_add_susfs_in_kernel-5.4.patch)
+          # El parche de fs/ probablemente ya está aplicado, lo ignoramos con forward
+          for patch in \
+            "$SUSFS_DIR/50_add_susfs_in_kernel-5.4.patch" \
+            "$SUSFS_DIR/50_add_susfs_in_fs-5.4.patch"; do
+            if [ -f "$patch" ]; then
+              patch -p1 --forward --batch < "$patch" || echo "  (ya aplicado o omitido)"
+              echo "✅ Patch procesado: $(basename $patch)"
+            fi
+          done
+
+          # Fix fsnotify para QGKI (handle_inode_event -> handle_event)
+          if [ -f fs/susfs.c ]; then
+            sed -i 's/\.handle_inode_event =/\.handle_event =/g' fs/susfs.c
+            sed -i 's/susfs_handle_sdcard_inode_event(struct fsnotify_mark \*mark, u32 mask, struct inode \*inode, struct inode \*dir, const struct qstr \*file_name, u32 cookie)/susfs_handle_sdcard_inode_event(struct fsnotify_group *group, struct inode *inode, u32 mask, const void *data, int data_type, const struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)/g' fs/susfs.c
+          fi
+
+          echo "✅ SuSFS añadido"
 
       - name: Apply QGKI 5.4 fixes (completos)
         run: |
@@ -196,40 +241,8 @@ jobs:
               print("  FIXED app_profile.c")
           PYEOF
 
-          echo "=== FIX 9: SELinux stubs (rules.c, sepolicy.c) ==="
-          python3 - << 'PYEOF'
-          import os
-          selinux_dir = "drivers/kernelsu/selinux"
-          if os.path.isdir(selinux_dir):
-              stub = "// Stub for kernel 5.4 QGKI compatibility\n#include <linux/kernel.h>\n"
-              for fn in ["rules.c", "sepolicy.c"]:
-                  fp = os.path.join(selinux_dir, fn)
-                  if os.path.exists(fp):
-                      with open(fp, "w") as f:
-                          f.write(stub)
-                      print(f"  FIXED {fn}")
-          PYEOF
-
-          echo "=== FIX 10: supercall stubs ==="
-          python3 - << 'PYEOF'
-          import os, glob
-          supercall_dir = "drivers/kernelsu/supercall"
-          if os.path.isdir(supercall_dir):
-              stub = "// Stub for kernel 5.4 QGKI compatibility\n#include <linux/kernel.h>\n"
-              for c_file in glob.glob(f"{supercall_dir}/*.c"):
-                  with open(c_file, "w") as f:
-                      f.write(stub)
-                  print(f"  FIXED {c_file}")
-          PYEOF
-
-          echo "=== FIX 11: selinux_hide.c stub ==="
-          if [ -f drivers/kernelsu/feature/selinux_hide.c ]; then
-            cat > drivers/kernelsu/feature/selinux_hide.c << 'STUB'
-          // Stub for kernel 5.4 QGKI compatibility
-          #include <linux/kernel.h>
-          STUB
-            echo "  FIXED selinux_hide.c"
-          fi
+          # No hacemos stubs de SELinux/supercall porque SuSFS los reemplaza con implementaciones reales
+          # Solo si aún fallan después de SuSFS, los añadiremos.
 
           echo "✅ Todos los fixes aplicados"
 
