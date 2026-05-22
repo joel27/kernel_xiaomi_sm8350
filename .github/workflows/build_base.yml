@@ -1,4 +1,4 @@
-name: Base diphons limpia + fixes mínimos (FINAL staging v2)
+name: Base diphons staging + arreglo táctil
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout kernel source ORIGINAL de diphons (staging)
+      - name: Checkout kernel source (staging)
         uses: actions/checkout@v4
         with:
           repository: diphons/kernel_xiaomi_sm8350
@@ -49,13 +49,11 @@ jobs:
           echo "=== FIX 1: pgtable.h ==="
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$f"
-            echo "  FIXED $f"
           done
 
           echo "=== FIX 2: strncpy_from_user_nofault ==="
           grep -rl "strncpy_from_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|strncpy_from_user_nofault|strncpy_from_user|g' "$f"
-            echo "  FIXED $f"
           done
 
           echo "=== FIX 3: copy_*_nofault ==="
@@ -112,21 +110,18 @@ jobs:
 
       - name: Fix sucompat.c — corregir nombres SIN reemplazar el archivo
         run: |
-          echo "=== Buscando sucompat.c ==="
           find drivers/kernelsu -name sucompat.c -type f | while read f; do
-            echo "  Corrigiendo $f"
             sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g' "$f"
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g' "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
           done
-          echo "✅ sucompat.c corregido (nombres de kprobe)"
+          echo "✅ sucompat.c corregido"
 
       - name: Fix app_profile.c (seccomp)
         run: |
           if [ -f drivers/kernelsu/policy/app_profile.c ]; then
             sed -i '/seccomp_filter_release/d' drivers/kernelsu/policy/app_profile.c
             sed -i '/atomic_set(&current->seccomp\.filter_count/d' drivers/kernelsu/policy/app_profile.c
-            echo "  FIXED app_profile.c"
           fi
 
       - name: Add stubs for missing SuSFS/KSU symbols
@@ -157,37 +152,30 @@ jobs:
           if ! grep -q "compat_stubs.o" drivers/kernelsu/Makefile; then
             echo 'obj-y += compat_stubs.o' >> drivers/kernelsu/Makefile
           fi
-          echo "✅ Stubs específicos añadidos"
+          echo "✅ Stubs añadidos"
 
-      - name: Configure kernel (combina base rb2 + fragmento star staging)
+      - name: Configure kernel y desactivar táctil con scripts/config
         run: |
-          # Descargar el defconfig base desde la rama rb2
+          # Obtener defconfig base desde rb2
           wget -O arch/arm64/configs/lahaina_base_defconfig \
             "https://raw.githubusercontent.com/diphons/kernel_xiaomi_sm8350/rb2/arch/arm64/configs/vendor/lahaina-qgki_defconfig"
           
-          # Crear el defconfig final copiando la base
           cp arch/arm64/configs/lahaina_base_defconfig arch/arm64/configs/star_defconfig
-          
-          # Añadir el fragmento específico de star (presente en staging)
+
+          # Añadir fragmento star
           if [ -f vendor/xiaomi/star.config ]; then
             cat vendor/xiaomi/star.config >> arch/arm64/configs/star_defconfig
             echo "  Fragmento star.config añadido"
-          else
-            echo "⚠️  No se encontró vendor/xiaomi/star.config"
           fi
-
-          # Desactivar el controlador táctil focaltech incompatible con 5.4
-          sed -i 's/CONFIG_TOUCHSCREEN_FOCALTECH_FTS=y/# CONFIG_TOUCHSCREEN_FOCALTECH_FTS is not set/g' arch/arm64/configs/star_defconfig
-          echo "  Touchscreen focaltech desactivado"
 
           # Desactivar Stack Protector
           sed -i 's/CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/g' arch/arm64/configs/star_defconfig
           sed -i 's/CONFIG_STACKPROTECTOR=y/# CONFIG_STACKPROTECTOR is not set/g' arch/arm64/configs/star_defconfig
 
-          # Activar IPCC
+          # IPCC
           sed -i 's/# CONFIG_QCOM_IPCC is not set/CONFIG_QCOM_IPCC=y/g' arch/arm64/configs/star_defconfig
 
-          # Añadir KSU
+          # KSU
           cat >> arch/arm64/configs/star_defconfig << 'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
@@ -201,14 +189,21 @@ jobs:
           CONFIG_KPM=y
           EOF
 
-          echo "✅ star_defconfig configurado correctamente"
+          echo "✅ Defconfig inicial creado"
 
-      - name: Build kernel
+      - name: Build kernel (con desactivación forzada del táctil)
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
 
           make O=out ARCH=arm64 star_defconfig
           make O=out ARCH=arm64 olddefconfig
+
+          # Construir scripts/config y desactivar el driver táctil
+          make O=out ARCH=arm64 scripts
+          ./scripts/config --file out/.config -d TOUCHSCREEN_FOCALTECH_FTS
+          make O=out ARCH=arm64 olddefconfig
+
+          echo "✅ Driver táctil desactivado, compilando..."
 
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
