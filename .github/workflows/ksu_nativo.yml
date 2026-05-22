@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo (FINAL v6)
+name: Base diphons KSU nativo (FINAL v7)
 
 on:
   workflow_dispatch:
@@ -109,84 +109,40 @@ jobs:
 
           echo "✅ QGKI fixes aplicados"
 
-      - name: Fix sucompat.c (handlers + insertar struct kprobe faltante)
+      - name: Fix sucompat.c (handlers + struct kprobe pts_unix98_lookup_kp)
         run: |
-          # Escribir el script Python a /tmp para evitar problemas con
-          # heredocs anidados dentro de loops en GitHub Actions
-          cat > /tmp/fix_sucompat.py << 'PYEOF'
-          import sys
-
-          path = sys.argv[1]
-          print("Procesando:", path)
-
-          with open(path, "r") as fh:
-              lines = fh.readlines()
-
-          # Si ya existe la struct, no hacer nada
-          if any("pts_unix98_lookup_kp" in l for l in lines):
-              print("  SKIP: pts_unix98_lookup_kp ya declarado")
-              sys.exit(0)
-
-          # Buscar la linea donde empieza pts_unix98_lookup_pre
-          start_line = -1
-          for i, line in enumerate(lines):
-              if "pts_unix98_lookup_pre" in line and "static int" in line:
-                  start_line = i
-                  print("  Handler encontrado en linea", i + 1, ":", line.rstrip())
-                  break
-
-          if start_line == -1:
-              print("  ERROR: no se encontro pts_unix98_lookup_pre")
-              sys.exit(1)
-
-          # Contar llaves desde start_line para encontrar cierre de funcion
-          depth = 0
-          found_open = False
-          close_line = -1
-          for i in range(start_line, len(lines)):
-              for ch in lines[i]:
-                  if ch == '{':
-                      depth += 1
-                      found_open = True
-                  elif ch == '}':
-                      depth -= 1
-              if found_open and depth == 0:
-                  close_line = i
-                  print("  Cierre de funcion en linea", i + 1, ":", lines[i].rstrip())
-                  break
-
-          if close_line == -1:
-              print("  ERROR: no se encontro cierre de funcion")
-              sys.exit(1)
-
-          struct_decl = (
-              "\n"
-              "static struct kprobe pts_unix98_lookup_kp = {\n"
-              '    .symbol_name = "pts_unix98_lookup",\n'
-              "    .pre_handler = pts_unix98_lookup_pre,\n"
-              "};\n"
-          )
-
-          lines.insert(close_line + 1, struct_decl)
-
-          with open(path, "w") as fh:
-              fh.writelines(lines)
-
-          print("  INSERTED pts_unix98_lookup_kp despues de linea", close_line + 1)
-          PYEOF
-
-          # Aplicar fixes a cada sucompat.c encontrado
           find drivers/kernelsu -name "sucompat.c" -type f | while read f; do
             echo "=== Corrigiendo: $f ==="
+
+            # Renombrar handlers execve/faccessat/newfstatat
             sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g'       "$f"
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g'  "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
-            python3 /tmp/fix_sucompat.py "$f"
-          done
 
-          echo ""
-          echo "=== Verificar resultado ==="
-          find drivers/kernelsu -name "sucompat.c" | xargs grep -n "pts_unix98_lookup" 2>/dev/null
+            # Insertar struct kprobe pts_unix98_lookup_kp con awk
+            # Estrategia: si la struct NO existe, insertarla justo ANTES
+            # de la primera linea que use pts_unix98_lookup_kp
+            if grep -q "pts_unix98_lookup_kp" "$f"; then
+              echo "  pts_unix98_lookup_kp ya existe, no se inserta"
+            else
+              echo "  Insertando struct kprobe pts_unix98_lookup_kp..."
+              awk '
+                /enable_kprobe\(&pts_unix98_lookup_kp\)/ && !inserted {
+                  print "static struct kprobe pts_unix98_lookup_kp = {"
+                  print "    .symbol_name = \"pts_unix98_lookup\","
+                  print "    .pre_handler = pts_unix98_lookup_pre,"
+                  print "};"
+                  print ""
+                  inserted = 1
+                }
+                { print }
+              ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+              echo "  INSERTED pts_unix98_lookup_kp"
+            fi
+
+            echo "  Verificacion:"
+            grep -n "pts_unix98_lookup" "$f"
+          done
           echo "✅ sucompat.c corregido"
 
       - name: Fix app_profile.c (seccomp 5.4 incompatibility)
