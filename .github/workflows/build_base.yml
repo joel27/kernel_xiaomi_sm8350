@@ -1,4 +1,4 @@
-name: Base diphons limpia + fixes mínimos (FINAL v4)
+name: Base diphons limpia + fixes mínimos (FINAL staging)
 
 on:
   workflow_dispatch:
@@ -8,11 +8,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout kernel source ORIGINAL de diphons
+      - name: Checkout kernel source ORIGINAL de diphons (staging)
         uses: actions/checkout@v4
         with:
           repository: diphons/kernel_xiaomi_sm8350
-          ref: 15
+          ref: staging
           fetch-depth: 1
 
       - name: Install dependencies
@@ -159,40 +159,22 @@ jobs:
           fi
           echo "✅ Stubs específicos añadidos"
 
-      - name: Configure kernel (búsqueda flexible de defconfig)
+      - name: Configure kernel (combina base rb2 + fragmento star staging)
         run: |
-          echo "=== Buscando defconfigs disponibles ==="
-          find arch/arm64/configs -name "star*" -o -name "lahaina*" 2>/dev/null || true
-          find . -name "star_defconfig" -o -name "lahaina*defconfig" 2>/dev/null || true
-
-          # Buscar en todas las ubicaciones posibles
-          DEFCONFIG=""
-          for candidate in \
-            arch/arm64/configs/vendor/star_defconfig \
-            arch/arm64/configs/star_defconfig \
-            arch/arm64/configs/vendor/lahaina-qgki_defconfig \
-            arch/arm64/configs/lahaina-qgki_defconfig \
-            arch/arm64/configs/lahaina_defconfig; do
-            if [ -f "$candidate" ]; then
-              DEFCONFIG="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$DEFCONFIG" ]; then
-            echo "❌ No se encontró ningún defconfig. Buscando todos los .defconfig..."
-            find . -name "*.defconfig" -type f
-            exit 1
+          # Descargar el defconfig base desde la rama rb2
+          wget -O arch/arm64/configs/lahaina_base_defconfig \
+            "https://raw.githubusercontent.com/diphons/kernel_xiaomi_sm8350/rb2/arch/arm64/configs/vendor/lahaina-qgki_defconfig"
+          
+          # Crear el defconfig final copiando la base
+          cp arch/arm64/configs/lahaina_base_defconfig arch/arm64/configs/star_defconfig
+          
+          # Añadir el fragmento específico de star (presente en staging)
+          if [ -f vendor/xiaomi/star.config ]; then
+            cat vendor/xiaomi/star.config >> arch/arm64/configs/star_defconfig
+            echo "  Fragmento star.config añadido"
+          else
+            echo "⚠️  No se encontró vendor/xiaomi/star.config"
           fi
-
-          echo "✅ Usando defconfig: $DEFCONFIG"
-          cp "$DEFCONFIG" arch/arm64/configs/star_defconfig
-
-          # Aplicar fragmento star si existe
-          find . -name "star_QGKI.config" -type f | while read frag; do
-            cat "$frag" >> arch/arm64/configs/star_defconfig
-            echo "  Fragmento $frag añadido"
-          done
 
           # Desactivar Stack Protector
           sed -i 's/CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/g' arch/arm64/configs/star_defconfig
@@ -264,19 +246,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-limpio-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-staging-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-limpio
-          path: diphons-limpio-*.zip
+          name: diphons-staging
+          path: diphons-staging-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-limpio
+          name: build-log-staging
           path: build.log
