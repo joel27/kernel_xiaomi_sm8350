@@ -1,4 +1,4 @@
-name: Base diphons staging - Final (con ajustes ChatGPT)
+name: Base diphons staging - Final (corregido scripts/config)
 
 on:
   workflow_dispatch:
@@ -203,11 +203,11 @@ jobs:
           make O=out ARCH=arm64 star_defconfig
           make O=out ARCH=arm64 olddefconfig
 
-          # Compilar scripts/config
-          make O=out ARCH=arm64 scripts
+          # Compilar scripts/config en el directorio fuente (sin O=out)
+          make scripts
 
-          # Desactivar múltiples variantes del controlador táctil Focaltech (ruta correcta)
-          out/scripts/config --file out/.config \
+          # Desactivar múltiples variantes del controlador táctil Focaltech (ruta corregida)
+          scripts/config --file out/.config \
             -d TOUCHSCREEN_FTS \
             -d TOUCHSCREEN_FOCALTECH \
             -d FOCALTECH_TOUCHSCREEN \
