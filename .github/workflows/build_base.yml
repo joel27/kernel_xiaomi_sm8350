@@ -1,4 +1,4 @@
-name: Base diphons limpia + fixes mínimos (FINAL v3)
+name: Base diphons limpia + fixes mínimos (FINAL v4)
 
 on:
   workflow_dispatch:
@@ -138,19 +138,16 @@ jobs:
           #include <linux/list.h>
           #include <linux/export.h>
 
-          // SusFS stubs que no están en el código actual
           void ksu_susfs_disable_sus_su(void) {}
           void ksu_susfs_enable_sus_su(void) {}
           EXPORT_SYMBOL(ksu_susfs_disable_sus_su);
           EXPORT_SYMBOL(ksu_susfs_enable_sus_su);
 
-          // ksu_handle_stat y ksu_handle_faccessat
           void ksu_handle_stat(void) {}
           void ksu_handle_faccessat(void) {}
           EXPORT_SYMBOL(ksu_handle_stat);
           EXPORT_SYMBOL(ksu_handle_faccessat);
 
-          // mount_list y mount_list_lock (por si acaso)
           DEFINE_SPINLOCK(mount_list_lock);
           LIST_HEAD(mount_list);
           EXPORT_SYMBOL(mount_list_lock);
@@ -162,35 +159,49 @@ jobs:
           fi
           echo "✅ Stubs específicos añadidos"
 
-      - name: Configure kernel
+      - name: Configure kernel (búsqueda flexible de defconfig)
         run: |
-          # Buscar defconfig específico para star, o usar lahaina como base
-          if [ -f arch/arm64/configs/vendor/star_defconfig ]; then
-            DEFCONFIG=arch/arm64/configs/vendor/star_defconfig
-          elif [ -f arch/arm64/configs/vendor/lahaina-qgki_defconfig ]; then
-            DEFCONFIG=arch/arm64/configs/vendor/lahaina-qgki_defconfig
-          else
-            echo "❌ ERROR: No se encontró defconfig para star ni lahaina"
+          echo "=== Buscando defconfigs disponibles ==="
+          find arch/arm64/configs -name "star*" -o -name "lahaina*" 2>/dev/null || true
+          find . -name "star_defconfig" -o -name "lahaina*defconfig" 2>/dev/null || true
+
+          # Buscar en todas las ubicaciones posibles
+          DEFCONFIG=""
+          for candidate in \
+            arch/arm64/configs/vendor/star_defconfig \
+            arch/arm64/configs/star_defconfig \
+            arch/arm64/configs/vendor/lahaina-qgki_defconfig \
+            arch/arm64/configs/lahaina-qgki_defconfig \
+            arch/arm64/configs/lahaina_defconfig; do
+            if [ -f "$candidate" ]; then
+              DEFCONFIG="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$DEFCONFIG" ]; then
+            echo "❌ No se encontró ningún defconfig. Buscando todos los .defconfig..."
+            find . -name "*.defconfig" -type f
             exit 1
           fi
 
-          echo "Usando defconfig: $DEFCONFIG"
+          echo "✅ Usando defconfig: $DEFCONFIG"
           cp "$DEFCONFIG" arch/arm64/configs/star_defconfig
 
           # Aplicar fragmento star si existe
-          if [ -f arch/arm64/configs/vendor/star_QGKI.config ]; then
-            cat arch/arm64/configs/vendor/star_QGKI.config >> arch/arm64/configs/star_defconfig
-            echo "  Fragmento star_QGKI.config añadido"
-          fi
+          find . -name "star_QGKI.config" -type f | while read frag; do
+            cat "$frag" >> arch/arm64/configs/star_defconfig
+            echo "  Fragmento $frag añadido"
+          done
 
-          # Desactivar Stack Protector explícitamente
+          # Desactivar Stack Protector
           sed -i 's/CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/g' arch/arm64/configs/star_defconfig
           sed -i 's/CONFIG_STACKPROTECTOR=y/# CONFIG_STACKPROTECTOR is not set/g' arch/arm64/configs/star_defconfig
 
-          # Activar IPCC de QCOM (si existe la opción)
+          # Activar IPCC
           sed -i 's/# CONFIG_QCOM_IPCC is not set/CONFIG_QCOM_IPCC=y/g' arch/arm64/configs/star_defconfig
 
-          # Añadir bases de KSU
+          # Añadir KSU
           cat >> arch/arm64/configs/star_defconfig << 'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
