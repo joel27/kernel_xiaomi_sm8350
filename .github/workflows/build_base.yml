@@ -1,4 +1,4 @@
-name: Base diphons limpia + fixes mínimos (FINAL REAL v2)
+name: Base diphons limpia + fixes mínimos (FINAL v3)
 
 on:
   workflow_dispatch:
@@ -43,16 +43,6 @@ jobs:
           git clone --depth=1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
             gcc32
-
-      - name: Download star_defconfig from your fork
-        run: |
-          wget -O configs/star_defconfig \
-            "https://raw.githubusercontent.com/joel27/kernel_xiaomi_sm8350/15/configs/star_defconfig"
-          if [ ! -f configs/star_defconfig ]; then
-            echo "❌ ERROR: No se pudo descargar configs/star_defconfig"
-            exit 1
-          fi
-          echo "✅ star_defconfig descargado correctamente"
 
       - name: Apply QGKI 5.4 fixes (pgtable, nofault, etc.)
         run: |
@@ -172,10 +162,26 @@ jobs:
           fi
           echo "✅ Stubs específicos añadidos"
 
-      - name: Use functional config as defconfig
+      - name: Configure kernel
         run: |
-          mkdir -p arch/arm64/configs
-          cp configs/star_defconfig arch/arm64/configs/star_defconfig
+          # Buscar defconfig específico para star, o usar lahaina como base
+          if [ -f arch/arm64/configs/vendor/star_defconfig ]; then
+            DEFCONFIG=arch/arm64/configs/vendor/star_defconfig
+          elif [ -f arch/arm64/configs/vendor/lahaina-qgki_defconfig ]; then
+            DEFCONFIG=arch/arm64/configs/vendor/lahaina-qgki_defconfig
+          else
+            echo "❌ ERROR: No se encontró defconfig para star ni lahaina"
+            exit 1
+          fi
+
+          echo "Usando defconfig: $DEFCONFIG"
+          cp "$DEFCONFIG" arch/arm64/configs/star_defconfig
+
+          # Aplicar fragmento star si existe
+          if [ -f arch/arm64/configs/vendor/star_QGKI.config ]; then
+            cat arch/arm64/configs/vendor/star_QGKI.config >> arch/arm64/configs/star_defconfig
+            echo "  Fragmento star_QGKI.config añadido"
+          fi
 
           # Desactivar Stack Protector explícitamente
           sed -i 's/CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/g' arch/arm64/configs/star_defconfig
@@ -184,7 +190,7 @@ jobs:
           # Activar IPCC de QCOM (si existe la opción)
           sed -i 's/# CONFIG_QCOM_IPCC is not set/CONFIG_QCOM_IPCC=y/g' arch/arm64/configs/star_defconfig
 
-          # Añadir bases de KSU (sin forzar configuraciones peligrosas)
+          # Añadir bases de KSU
           cat >> arch/arm64/configs/star_defconfig << 'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
@@ -198,18 +204,7 @@ jobs:
           CONFIG_KPM=y
           EOF
 
-          echo "✅ star_defconfig configurado"
-
-      - name: Pre-build diagnostics
-        run: |
-          echo "=== Verificar símbolos críticos ==="
-          for sym in ksu_sucompat_init ksu_sucompat_exit ksu_handle_execveat_sucompat ksu_susfs_disable_sus_su ksu_susfs_enable_sus_su ksu_handle_stat ksu_handle_faccessat; do
-            echo "--- $sym ---"
-            grep -r "$sym" drivers/kernelsu/ fs/ --include="*.c" -l 2>/dev/null | head -3 || echo "  ⚠️ No encontrado en fuentes"
-          done
-
-          echo "=== Archivos .c en KSU ==="
-          find drivers/kernelsu -name "*.c" | sort
+          echo "✅ star_defconfig configurado correctamente"
 
       - name: Build kernel
         run: |
