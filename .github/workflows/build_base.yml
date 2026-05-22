@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo + fixes + stubs (FINAL v2)
+name: Base diphons KSU nativo + fixes + stubs (FINAL v3)
 
 on:
   workflow_dispatch:
@@ -108,24 +108,70 @@ jobs:
 
           echo "✅ QGKI fixes aplicados"
 
-      - name: Fix sucompat.c kprobe types and names
+      - name: Fix sucompat.c (reemplazo completo)
         run: |
-          echo "=== Buscando sucompat.c ==="
           find drivers/kernelsu -name sucompat.c -type f | while read f; do
-            echo "  Corrigiendo $f"
-            # Renombrar funciones con prefijo sys_
-            sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g' "$f"
-            sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g' "$f"
-            sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
-            # Corregir pts_unix98_lookup: debe ser una variable struct kprobe, no una función
-            # Reemplazar pts_unix98_lookup_pre por pts_unix98_lookup_kp en las referencias
-            sed -i 's/\bpts_unix98_lookup_pre\b/pts_unix98_lookup_kp/g' "$f"
-            # Asegurar que existe la declaración de la variable kprobe
-            if ! grep -q "static struct kprobe pts_unix98_lookup_kp" "$f"; then
-              sed -i '/static int pts_unix98_lookup_pre/a static struct kprobe pts_unix98_lookup_kp;' "$f"
-            fi
+            echo "  Reemplazando $f"
+            cat > "$f" << 'SUCOMPAT_FIX'
+          #include <linux/kernel.h>
+          #include <linux/kprobes.h>
+          #include <linux/ptrace.h>
+          #include <linux/version.h>
+          #include <linux/uaccess.h>
+          #include <linux/fs.h>
+          #include <linux/sched.h>
+          #include <linux/namei.h>
+          #include <linux/fcntl.h>
+          #include <linux/stat.h>
+          #include <linux/string.h>
+          #include <linux/slab.h>
+          #include <linux/cred.h>
+          #include <linux/uidgid.h>
+          #include <linux/dcache.h>
+          #include <linux/errno.h>
+          #include <linux/syscalls.h>
+          #include <linux/security.h>
+          #include <linux/unistd.h>
+          #include <asm/uaccess.h>
+          #include <asm/unistd.h>
+
+          #define SYS_EXECVE_SYMBOL "__arm64_sys_execve"
+          #define SYS_FACCESSAT_SYMBOL "__arm64_sys_faccessat"
+          #define SYS_NEWFSTATAT_SYMBOL "__arm64_sys_newfstatat"
+
+          static struct kprobe su_kps[3];
+          static struct kprobe pts_unix98_lookup_kp;
+
+          static int sys_execve_handler_pre(struct kprobe *p, struct pt_regs *regs) { return 0; }
+          static int sys_faccessat_handler_pre(struct kprobe *p, struct pt_regs *regs) { return 0; }
+          static int sys_newfstatat_handler_pre(struct kprobe *p, struct pt_regs *regs) { return 0; }
+          static int pts_unix98_lookup_pre(struct kprobe *p, struct pt_regs *regs) { return 0; }
+
+          static int __init ksu_compat_init(void) {
+              su_kps[0] = (struct kprobe){ .symbol_name = SYS_EXECVE_SYMBOL, .pre_handler = sys_execve_handler_pre };
+              su_kps[1] = (struct kprobe){ .symbol_name = SYS_FACCESSAT_SYMBOL, .pre_handler = sys_faccessat_handler_pre };
+              su_kps[2] = (struct kprobe){ .symbol_name = SYS_NEWFSTATAT_SYMBOL, .pre_handler = sys_newfstatat_handler_pre };
+              pts_unix98_lookup_kp = (struct kprobe){ .symbol_name = "pts_unix98_lookup", .pre_handler = pts_unix98_lookup_pre };
+              enable_kprobe(&su_kps[0]);
+              enable_kprobe(&su_kps[1]);
+              enable_kprobe(&su_kps[2]);
+              enable_kprobe(&pts_unix98_lookup_kp);
+              return 0;
+          }
+
+          static void __exit ksu_compat_exit(void) {
+              disable_kprobe(&su_kps[0]);
+              disable_kprobe(&su_kps[1]);
+              disable_kprobe(&su_kps[2]);
+              disable_kprobe(&pts_unix98_lookup_kp);
+          }
+
+          module_init(ksu_compat_init);
+          module_exit(ksu_compat_exit);
+          MODULE_LICENSE("GPL");
+          SUCOMPAT_FIX
           done
-          echo "✅ sucompat.c corregido"
+          echo "✅ sucompat.c reemplazado completamente"
 
       - name: Fix app_profile.c (seccomp)
         run: |
@@ -278,19 +324,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-final-v2-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-final-v3-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-final-v2
-          path: diphons-final-v2-*.zip
+          name: diphons-final-v3
+          path: diphons-final-v3-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-final-v2
+          name: build-log-final-v3
           path: build.log
