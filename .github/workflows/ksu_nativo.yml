@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo (FINAL v7)
+name: Base diphons KSU nativo (FINAL v8)
 
 on:
   workflow_dispatch:
@@ -119,13 +119,14 @@ jobs:
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g'  "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
 
-            # Insertar struct kprobe pts_unix98_lookup_kp con awk
-            # Estrategia: si la struct NO existe, insertarla justo ANTES
-            # de la primera linea que use pts_unix98_lookup_kp
-            if grep -q "pts_unix98_lookup_kp" "$f"; then
-              echo "  pts_unix98_lookup_kp ya existe, no se inserta"
+            # IMPORTANTE: verificar la DECLARACION de la struct, no el identificador.
+            # El archivo ya tiene enable_kprobe(&pts_unix98_lookup_kp) por eso
+            # grep -q "pts_unix98_lookup_kp" siempre daba true y saltaba la insercion.
+            if grep -q "struct kprobe pts_unix98_lookup_kp" "$f"; then
+              echo "  struct kprobe pts_unix98_lookup_kp ya declarada, no se inserta"
             else
               echo "  Insertando struct kprobe pts_unix98_lookup_kp..."
+              # awk: insertar la struct justo antes de enable_kprobe(&pts_unix98_lookup_kp)
               awk '
                 /enable_kprobe\(&pts_unix98_lookup_kp\)/ && !inserted {
                   print "static struct kprobe pts_unix98_lookup_kp = {"
@@ -137,10 +138,10 @@ jobs:
                 }
                 { print }
               ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
-              echo "  INSERTED pts_unix98_lookup_kp"
+              echo "  DONE"
             fi
 
-            echo "  Verificacion:"
+            echo "  --- Verificacion pts_unix98_lookup ---"
             grep -n "pts_unix98_lookup" "$f"
           done
           echo "✅ sucompat.c corregido"
