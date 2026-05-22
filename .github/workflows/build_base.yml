@@ -1,4 +1,4 @@
-name: Base diphons staging + arreglo táctil
+name: Base diphons staging - Final (con ajustes ChatGPT)
 
 on:
   workflow_dispatch:
@@ -103,19 +103,15 @@ jobs:
           content = content.replace('ksu_handle_inode_event', 'ksu_handle_event')
           with open(pkg, "w") as f:
               f.write(content)
-          print("  FIXED pkg_observer.c")
           PYEOF
 
-          echo "✅ QGKI fixes aplicados"
-
-      - name: Fix sucompat.c — corregir nombres SIN reemplazar el archivo
+      - name: Fix sucompat.c — corregir nombres
         run: |
           find drivers/kernelsu -name sucompat.c -type f | while read f; do
             sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g' "$f"
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g' "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
           done
-          echo "✅ sucompat.c corregido"
 
       - name: Fix app_profile.c (seccomp)
         run: |
@@ -124,7 +120,7 @@ jobs:
             sed -i '/atomic_set(&current->seccomp\.filter_count/d' drivers/kernelsu/policy/app_profile.c
           fi
 
-      - name: Add stubs for missing SuSFS/KSU symbols
+      - name: Add stubs for missing SuSFS/KSU symbols (ampliado)
         run: |
           cat > drivers/kernelsu/compat_stubs.c << 'EOF'
           #include <linux/kernel.h>
@@ -147,30 +143,41 @@ jobs:
           LIST_HEAD(mount_list);
           EXPORT_SYMBOL(mount_list_lock);
           EXPORT_SYMBOL(mount_list);
+
+          // Stubs preventivos para KSU interno
+          void apply_kernelsu_rules(void) {}
+          void ksu_selinux_hide_init(void) {}
+          void ksu_selinux_hide_exit(void) {}
+          void ksu_selinux_hide_drop_backup_if_unused(void) {}
+          int ksu_supercalls_init(void) { return 0; }
+          void ksu_supercalls_exit(void) {}
+          int ksu_install_fd(void) { return 0; }
+          int path_mount(void) { return -ENOSYS; }
+
+          EXPORT_SYMBOL(apply_kernelsu_rules);
+          EXPORT_SYMBOL(ksu_selinux_hide_init);
+          EXPORT_SYMBOL(ksu_selinux_hide_exit);
+          EXPORT_SYMBOL(ksu_selinux_hide_drop_backup_if_unused);
+          EXPORT_SYMBOL(ksu_supercalls_init);
+          EXPORT_SYMBOL(ksu_supercalls_exit);
+          EXPORT_SYMBOL(ksu_install_fd);
+          EXPORT_SYMBOL(path_mount);
           EOF
 
           if ! grep -q "compat_stubs.o" drivers/kernelsu/Makefile; then
             echo 'obj-y += compat_stubs.o' >> drivers/kernelsu/Makefile
           fi
-          echo "✅ Stubs añadidos"
 
-      - name: Configure kernel y desactivar táctil con scripts/config
+      - name: Configure kernel (base rb2 + fragmento star staging)
         run: |
-          # Obtener defconfig base desde rb2
           wget -O arch/arm64/configs/lahaina_base_defconfig \
             "https://raw.githubusercontent.com/diphons/kernel_xiaomi_sm8350/rb2/arch/arm64/configs/vendor/lahaina-qgki_defconfig"
           
           cp arch/arm64/configs/lahaina_base_defconfig arch/arm64/configs/star_defconfig
-
-          # Añadir fragmento star
+          
           if [ -f vendor/xiaomi/star.config ]; then
             cat vendor/xiaomi/star.config >> arch/arm64/configs/star_defconfig
-            echo "  Fragmento star.config añadido"
           fi
-
-          # Desactivar Stack Protector
-          sed -i 's/CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/g' arch/arm64/configs/star_defconfig
-          sed -i 's/CONFIG_STACKPROTECTOR=y/# CONFIG_STACKPROTECTOR is not set/g' arch/arm64/configs/star_defconfig
 
           # IPCC
           sed -i 's/# CONFIG_QCOM_IPCC is not set/CONFIG_QCOM_IPCC=y/g' arch/arm64/configs/star_defconfig
@@ -189,21 +196,31 @@ jobs:
           CONFIG_KPM=y
           EOF
 
-          echo "✅ Defconfig inicial creado"
-
-      - name: Build kernel (con desactivación forzada del táctil)
+      - name: Build kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
 
           make O=out ARCH=arm64 star_defconfig
           make O=out ARCH=arm64 olddefconfig
 
-          # Construir scripts/config y desactivar el driver táctil
+          # Compilar scripts/config
           make O=out ARCH=arm64 scripts
-          ./scripts/config --file out/.config -d TOUCHSCREEN_FOCALTECH_FTS
+
+          # Desactivar múltiples variantes del controlador táctil Focaltech (ruta correcta)
+          out/scripts/config --file out/.config \
+            -d TOUCHSCREEN_FTS \
+            -d TOUCHSCREEN_FOCALTECH \
+            -d FOCALTECH_TOUCHSCREEN \
+            -d TOUCHSCREEN_FOCALTECH_FTS_SPI \
+            -d TOUCHSCREEN_FOCALTECH_FTS
+
           make O=out ARCH=arm64 olddefconfig
 
-          echo "✅ Driver táctil desactivado, compilando..."
+          # Verificación ampliada
+          echo "=== Verificación táctil ==="
+          grep FOCALTECH out/.config || true
+          grep FTS out/.config || true
+          grep CYTTSP out/.config || true
 
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
@@ -245,19 +262,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-staging-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-staging-final-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-staging
-          path: diphons-staging-*.zip
+          name: diphons-staging-final
+          path: diphons-staging-final-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-staging
+          name: build-log-staging-final
           path: build.log
