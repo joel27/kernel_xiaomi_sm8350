@@ -1,4 +1,4 @@
-name: Base diphons limpia + fixes mínimos (FINAL staging)
+name: Base diphons limpia + fixes mínimos (FINAL staging v2)
 
 on:
   workflow_dispatch:
@@ -175,6 +175,10 @@ jobs:
           else
             echo "⚠️  No se encontró vendor/xiaomi/star.config"
           fi
+
+          # Desactivar el controlador táctil focaltech incompatible con 5.4
+          sed -i 's/CONFIG_TOUCHSCREEN_FOCALTECH_FTS=y/# CONFIG_TOUCHSCREEN_FOCALTECH_FTS is not set/g' arch/arm64/configs/star_defconfig
+          echo "  Touchscreen focaltech desactivado"
 
           # Desactivar Stack Protector
           sed -i 's/CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/g' arch/arm64/configs/star_defconfig
