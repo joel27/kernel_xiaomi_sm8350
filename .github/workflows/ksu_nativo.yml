@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo (FINAL v5)
+name: Base diphons KSU nativo (FINAL v6)
 
 on:
   workflow_dispatch:
@@ -109,41 +109,37 @@ jobs:
 
           echo "✅ QGKI fixes aplicados"
 
-      - name: Fix sucompat.c (handlers + insertar struct kprobe pts_unix98_lookup_kp)
+      - name: Fix sucompat.c (handlers + insertar struct kprobe faltante)
         run: |
-          find drivers/kernelsu -name "sucompat.c" -type f | while read f; do
-            echo "  Corrigiendo $f"
-
-            # Renombrar solo los handlers execve/faccessat/newfstatat
-            sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g'       "$f"
-            sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g'  "$f"
-            sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
-
-            # Insertar la struct kprobe faltante usando brace-counting correcto
-            python3 << PYEOF
+          # Escribir el script Python a /tmp para evitar problemas con
+          # heredocs anidados dentro de loops en GitHub Actions
+          cat > /tmp/fix_sucompat.py << 'PYEOF'
           import sys
 
-          path = "$f"
+          path = sys.argv[1]
+          print("Procesando:", path)
+
           with open(path, "r") as fh:
               lines = fh.readlines()
 
           # Si ya existe la struct, no hacer nada
           if any("pts_unix98_lookup_kp" in l for l in lines):
-              print("  SKIP: pts_unix98_lookup_kp ya declarado en", path)
+              print("  SKIP: pts_unix98_lookup_kp ya declarado")
               sys.exit(0)
 
-          # Buscar la línea donde empieza pts_unix98_lookup_pre
+          # Buscar la linea donde empieza pts_unix98_lookup_pre
           start_line = -1
           for i, line in enumerate(lines):
               if "pts_unix98_lookup_pre" in line and "static int" in line:
                   start_line = i
+                  print("  Handler encontrado en linea", i + 1, ":", line.rstrip())
                   break
 
           if start_line == -1:
-              print("  ERROR: no se encontro pts_unix98_lookup_pre en", path)
+              print("  ERROR: no se encontro pts_unix98_lookup_pre")
               sys.exit(1)
 
-          # Contar llaves desde start_line para encontrar el cierre de la funcion
+          # Contar llaves desde start_line para encontrar cierre de funcion
           depth = 0
           found_open = False
           close_line = -1
@@ -156,10 +152,11 @@ jobs:
                       depth -= 1
               if found_open and depth == 0:
                   close_line = i
+                  print("  Cierre de funcion en linea", i + 1, ":", lines[i].rstrip())
                   break
 
           if close_line == -1:
-              print("  ERROR: no se encontro cierre de funcion en", path)
+              print("  ERROR: no se encontro cierre de funcion")
               sys.exit(1)
 
           struct_decl = (
@@ -175,11 +172,21 @@ jobs:
           with open(path, "w") as fh:
               fh.writelines(lines)
 
-          print("  INSERTED pts_unix98_lookup_kp despues de la linea", close_line + 1, "en", path)
+          print("  INSERTED pts_unix98_lookup_kp despues de linea", close_line + 1)
           PYEOF
 
-            echo "  FIXED $f"
+          # Aplicar fixes a cada sucompat.c encontrado
+          find drivers/kernelsu -name "sucompat.c" -type f | while read f; do
+            echo "=== Corrigiendo: $f ==="
+            sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g'       "$f"
+            sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g'  "$f"
+            sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
+            python3 /tmp/fix_sucompat.py "$f"
           done
+
+          echo ""
+          echo "=== Verificar resultado ==="
+          find drivers/kernelsu -name "sucompat.c" | xargs grep -n "pts_unix98_lookup" 2>/dev/null
           echo "✅ sucompat.c corregido"
 
       - name: Fix app_profile.c (seccomp 5.4 incompatibility)
@@ -222,7 +229,7 @@ jobs:
           for d in sorted(os.listdir(ksu_root)):
               full = f"{ksu_root}/{d}"
               if os.path.isdir(full):
-                  c_files = sorted([f for f in os.listdir(full) if f.endswith(".c")])
+                  c_files = sorted([fn for fn in os.listdir(full) if fn.endswith(".c")])
                   if c_files:
                       subdirs.append((d, c_files))
                       print(f"  Subdir: {d} -> {c_files}")
@@ -230,9 +237,9 @@ jobs:
           for sd, c_files in subdirs:
               subdir_mk = f"{ksu_root}/{sd}/Makefile"
               if not os.path.exists(subdir_mk):
-                  lines = [f"obj-y += {f[:-2]}.o" for f in c_files]
+                  obj_lines = [f"obj-y += {fn[:-2]}.o" for fn in c_files]
                   with open(subdir_mk, "w") as f:
-                      f.write("\n".join(lines) + "\n")
+                      f.write("\n".join(obj_lines) + "\n")
                   print(f"  Creado {subdir_mk}")
               else:
                   print(f"  Ya existe {subdir_mk}")
@@ -256,18 +263,18 @@ jobs:
           python3 - << 'PYEOF'
           import subprocess
 
-          result = subprocess.run(
+          r1 = subprocess.run(
               ["grep", "-r", "EXPORT_SYMBOL.*mount_list", "--include=*.c", "fs/", "kernel/"],
               capture_output=True, text=True
           )
-          mount_list_exported = bool(result.stdout.strip())
+          mount_list_exported = bool(r1.stdout.strip())
           print(f"mount_list exportado en kernel: {mount_list_exported}")
 
-          result2 = subprocess.run(
+          r2 = subprocess.run(
               ["grep", "-r", "is_first_ipcc_msg", "--include=*.c", "drivers/"],
               capture_output=True, text=True
           )
-          ipcc_in_kernel = bool(result2.stdout.strip())
+          ipcc_in_kernel = bool(r2.stdout.strip())
           print(f"is_first_ipcc_msg en drivers/: {ipcc_in_kernel}")
 
           stub_lines = [
@@ -281,7 +288,7 @@ jobs:
           ]
 
           if not mount_list_exported:
-              print("  → Añadiendo stubs de mount_list / mount_list_lock")
+              print("  -> Añadiendo stubs de mount_list / mount_list_lock")
               stub_lines += [
                   '/* mount_list: no exportado en este kernel base */',
                   'DEFINE_SPINLOCK(mount_list_lock);',
@@ -290,19 +297,15 @@ jobs:
                   'EXPORT_SYMBOL(mount_list);',
                   '',
               ]
-          else:
-              print("  → mount_list ya exportado, no se añade stub")
 
           if not ipcc_in_kernel:
-              print("  → Añadiendo stub de is_first_ipcc_msg")
+              print("  -> Añadiendo stub de is_first_ipcc_msg")
               stub_lines += [
                   '/* is_first_ipcc_msg: driver QCOM IPCC no disponible */',
                   'bool is_first_ipcc_msg(void) { return false; }',
                   'EXPORT_SYMBOL(is_first_ipcc_msg);',
                   '',
               ]
-          else:
-              print("  → is_first_ipcc_msg ya existe en drivers/, no se añade stub")
 
           stub_lines += [
               '/* ksu_install_fd: weak stub de seguridad */',
@@ -336,7 +339,6 @@ jobs:
             arch/arm64/configs/star_defconfig
           sed -i 's/^CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' \
             arch/arm64/configs/star_defconfig
-
           sed -i 's/^CONFIG_KSU_SUSFS_SUS_MOUNT=y/# CONFIG_KSU_SUSFS_SUS_MOUNT is not set/' \
             arch/arm64/configs/star_defconfig
           sed -i 's/^CONFIG_KSU_SUSFS_TRY_UMOUNT=y/# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set/' \
@@ -367,6 +369,11 @@ jobs:
           find drivers/kernelsu -name "*.c" | sort
 
           echo ""
+          echo "=== Verificar pts_unix98_lookup en sucompat.c ==="
+          find drivers/kernelsu -name "sucompat.c" | xargs grep -n "pts_unix98_lookup" 2>/dev/null \
+            || echo "  sucompat.c no encontrado"
+
+          echo ""
           echo "=== KSU Makefiles ==="
           find drivers/kernelsu -name "Makefile" | sort | while read mk; do
             echo "--- $mk ---"
@@ -374,14 +381,7 @@ jobs:
           done
 
           echo ""
-          echo "=== Verificar pts_unix98_lookup_kp en sucompat.c ==="
-          grep -n "pts_unix98_lookup" drivers/kernelsu/sucompat.c 2>/dev/null \
-            || find drivers/kernelsu -name sucompat.c | \
-               xargs grep -n "pts_unix98_lookup" 2>/dev/null \
-            || echo "  sucompat.c no encontrado"
-
-          echo ""
-          echo "=== Verificar símbolos críticos en fuentes KSU ==="
+          echo "=== Verificar símbolos críticos ==="
           for sym in \
               apply_kernelsu_rules \
               ksu_selinux_hide_init ksu_selinux_hide_exit \
@@ -394,9 +394,9 @@ jobs:
               is_first_ipcc_msg; do
             files=$(grep -rl "\b${sym}\b" drivers/kernelsu/ --include="*.c" 2>/dev/null | tr '\n' ' ')
             if [ -n "$files" ]; then
-              echo "  ✅ $sym -> $files"
+              echo "  OK $sym -> $files"
             else
-              echo "  ⚠️  $sym -> NO encontrado"
+              echo "  WARN $sym -> NO encontrado"
             fi
           done
 
