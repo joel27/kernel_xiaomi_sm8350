@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo + fixes + stubs (FINAL v3)
+name: Base diphons KSU nativo + fixes + stubs (FINAL v4)
 
 on:
   workflow_dispatch:
@@ -181,7 +181,7 @@ jobs:
             echo "  FIXED app_profile.c"
           fi
 
-      - name: Add global compatibility stubs
+      - name: Add global compatibility stubs (sin duplicados)
         run: |
           cat > drivers/kernelsu/compat_5_4.c << 'EOF'
           #include <linux/kernel.h>
@@ -205,10 +205,8 @@ jobs:
           bool is_first_ipcc_msg(void) { return false; }
           EXPORT_SYMBOL(is_first_ipcc_msg);
 
-          // Resto de los stubs críticos para el linker
+          // Stubs que realmente faltan y no están en otros .c de KSU
           void ksu_handle_devpts(void) {}
-          void ksu_handle_execveat(void) {}
-          void ksu_handle_vfs_read(void) {}
           void ksu_selinux_hide_drop_backup_if_unused(void) {}
           void apply_kernelsu_rules(void) {}
           void ksu_selinux_hide_init(void) {}
@@ -219,15 +217,13 @@ jobs:
           int path_mount(void) { return -ENOSYS; }
 
           EXPORT_SYMBOL(ksu_handle_devpts);
-          EXPORT_SYMBOL(ksu_handle_execveat);
-          EXPORT_SYMBOL(ksu_handle_vfs_read);
           EOF
 
           # Integrarlo limpiamente en el Makefile nativo
           if ! grep -q "compat_5_4.o" drivers/kernelsu/Makefile; then
             echo 'obj-y += compat_5_4.o' >> drivers/kernelsu/Makefile
           fi
-          echo "✅ Stubs globales añadidos"
+          echo "✅ Stubs globales añadidos (sin duplicados)"
 
       - name: Use functional config as defconfig
         run: |
@@ -324,19 +320,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-final-v3-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-final-v4-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-final-v3
-          path: diphons-final-v3-*.zip
+          name: diphons-final-v4
+          path: diphons-final-v4-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-final-v3
+          name: build-log-final-v4
           path: build.log
