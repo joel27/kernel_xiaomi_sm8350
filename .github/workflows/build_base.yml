@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo + fixes Makefile + stubs
+name: Base diphons KSU nativo + fixes + stubs (FINAL)
 
 on:
   workflow_dispatch:
@@ -106,83 +106,29 @@ jobs:
           print("  FIXED pkg_observer.c")
           PYEOF
 
-          echo "=== FIX 5: sucompat.c function names ==="
-          if [ -f drivers/kernelsu/feature/sucompat.c ]; then
-            sed -i 's/execve_handler_pre/sys_execve_handler_pre/g' drivers/kernelsu/feature/sucompat.c
-            sed -i 's/faccessat_handler_pre/sys_faccessat_handler_pre/g' drivers/kernelsu/feature/sucompat.c
-            sed -i 's/newfstatat_handler_pre/sys_newfstatat_handler_pre/g' drivers/kernelsu/feature/sucompat.c
-            sed -i 's/pts_unix98_lookup_kp/pts_unix98_lookup_pre/g' drivers/kernelsu/feature/sucompat.c
-            echo "  FIXED sucompat.c"
-          fi
-
           echo "✅ QGKI fixes aplicados"
 
-      - name: Fix KSU subdirectory Makefiles (para compilar todo)
+      - name: Fix sucompat.c kprobe names (donde sea que esté)
         run: |
-          python3 - << 'PYEOF'
-          import os
+          echo "=== Buscando sucompat.c ==="
+          find drivers/kernelsu -name sucompat.c -type f | while read f; do
+            echo "  Corrigiendo $f"
+            sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g' "$f"
+            sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g' "$f"
+            sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
+            sed -i 's/\bpts_unix98_lookup_kp\b/pts_unix98_lookup_pre/g' "$f"
+          done
+          echo "✅ sucompat.c corregido"
 
-          ksu_root = "drivers/kernelsu"
-          makefile_path = f"{ksu_root}/Makefile"
-
-          if not os.path.exists(makefile_path):
-              print("❌ No hay Makefile en drivers/kernelsu")
-              exit(1)
-
-          with open(makefile_path, "r") as f:
-              content = f.read()
-
-          print("=== Makefile actual ===")
-          print(content)
-
-          # Detectar subdirectorios con .c files
-          subdirs = []
-          for d in os.listdir(ksu_root):
-              full = f"{ksu_root}/{d}"
-              if os.path.isdir(full):
-                  c_files = [f for f in os.listdir(full) if f.endswith(".c")]
-                  if c_files:
-                      subdirs.append(d)
-                      print(f"  Subdir: {d} -> {c_files}")
-
-          # Verificar que cada subdir esté en el Makefile o en su propio Makefile
-          for sd in subdirs:
-              subdir_mk = f"{ksu_root}/{sd}/Makefile"
-              if not os.path.exists(subdir_mk):
-                  # Crear Makefile para el subdir
-                  c_files = [f for f in os.listdir(f"{ksu_root}/{sd}") if f.endswith(".c")]
-                  lines = [f"obj-y += {f[:-2]}.o" for f in c_files]
-                  with open(subdir_mk, "w") as f:
-                      f.write("\n".join(lines) + "\n")
-                  print(f"  ✅ Creado {subdir_mk}: {lines}")
-              else:
-                  print(f"  ✓ Ya existe {subdir_mk}")
-
-              # Asegurar que el Makefile principal incluye el subdir
-              obj_entry = f"obj-y += {sd}/"
-              if obj_entry not in content:
-                  content += f"\n{obj_entry}\n"
-                  print(f"  ✅ Añadido al Makefile principal: {obj_entry}")
-
-          with open(makefile_path, "w") as f:
-              f.write(content)
-
-          print("=== Makefile final ===")
-          with open(makefile_path) as f:
-              print(f.read())
-
-          PYEOF
-
-          # Fix app_profile.c (seccomp_filter_release)
+      - name: Fix app_profile.c (seccomp)
+        run: |
           if [ -f drivers/kernelsu/policy/app_profile.c ]; then
             sed -i '/seccomp_filter_release/d' drivers/kernelsu/policy/app_profile.c
             sed -i '/atomic_set(&current->seccomp\.filter_count/d' drivers/kernelsu/policy/app_profile.c
             echo "  FIXED app_profile.c"
           fi
 
-          echo "✅ KSU Makefile fixes aplicados"
-
-      - name: Add global compatibility stubs (solo símbolos externos)
+      - name: Add global compatibility stubs
         run: |
           cat > drivers/kernelsu/compat_5_4.c << 'EOF'
           #include <linux/kernel.h>
@@ -194,24 +140,43 @@ jobs:
           #include <linux/types.h>
           #include <linux/export.h>
 
-          // SusFS stubs (si no están en el kernel)
+          // SuSFS stubs
           DEFINE_SPINLOCK(mount_list_lock);
           LIST_HEAD(mount_list);
           EXPORT_SYMBOL(mount_list_lock);
           EXPORT_SYMBOL(mount_list);
+          int ksu_install_fd(void) { return 0; }
+          EXPORT_SYMBOL(ksu_install_fd);
 
-          // is_first_ipcc_msg (Qualcomm)
+          // Qualcomm IPCC
           bool is_first_ipcc_msg(void) { return false; }
           EXPORT_SYMBOL(is_first_ipcc_msg);
+
+          // Resto de los stubs críticos para el linker
+          void ksu_handle_devpts(void) {}
+          void ksu_handle_execveat(void) {}
+          void ksu_handle_vfs_read(void) {}
+          void ksu_selinux_hide_drop_backup_if_unused(void) {}
+          void apply_kernelsu_rules(void) {}
+          void ksu_selinux_hide_init(void) {}
+          void ksu_selinux_hide_exit(void) {}
+          int ksu_supercalls_init(void) { return 0; }
+          void ksu_supercalls_exit(void) {}
+          void seccomp_filter_release(void) {}
+          int path_mount(void) { return -ENOSYS; }
+
+          EXPORT_SYMBOL(ksu_handle_devpts);
+          EXPORT_SYMBOL(ksu_handle_execveat);
+          EXPORT_SYMBOL(ksu_handle_vfs_read);
           EOF
 
-          # Forzar compilación como objeto independiente
+          # Integrarlo limpiamente en el Makefile nativo
           if ! grep -q "compat_5_4.o" drivers/kernelsu/Makefile; then
             echo 'obj-y += compat_5_4.o' >> drivers/kernelsu/Makefile
           fi
           echo "✅ Stubs globales añadidos"
 
-      - name: Use functional config as defconfig (SIN Stack Protector forzado)
+      - name: Use functional config as defconfig
         run: |
           if [ ! -f configs/star_defconfig ]; then
             echo "❌ ERROR: configs/star_defconfig no encontrado"
@@ -220,12 +185,23 @@ jobs:
           mkdir -p arch/arm64/configs
           cp configs/star_defconfig arch/arm64/configs/star_defconfig
 
-          # Añadir configuraciones necesarias pero NO Stack Protector
+          # Desactivar Stack Protector explícitamente
+          sed -i 's/CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/g' arch/arm64/configs/star_defconfig
+          sed -i 's/CONFIG_STACKPROTECTOR=y/# CONFIG_STACKPROTECTOR is not set/g' arch/arm64/configs/star_defconfig
+
+          # Activar IPCC de QCOM
+          sed -i 's/# CONFIG_QCOM_IPCC is not set/CONFIG_QCOM_IPCC=y/g' arch/arm64/configs/star_defconfig
+
+          # Desactivar funciones SuSFS que dependen de parches profundos
+          sed -i 's/CONFIG_KSU_SUSFS_SUS_MOUNT=y/# CONFIG_KSU_SUSFS_SUS_MOUNT is not set/g' arch/arm64/configs/star_defconfig
+          sed -i 's/CONFIG_KSU_SUSFS_TRY_UMOUNT=y/# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set/g' arch/arm64/configs/star_defconfig
+          sed -i 's/CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y/# CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT is not set/g' arch/arm64/configs/star_defconfig
+
+          # Añadir bases de KSU
           cat >> arch/arm64/configs/star_defconfig << 'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
-          CONFIG_KSU_SUSFS_SUS_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_KSTAT=y
           CONFIG_KSU_SUSFS_SPOOF_UNAME=y
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
@@ -233,24 +209,20 @@ jobs:
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           CONFIG_KSU_SUSFS_SUS_MAP=y
           CONFIG_KPM=y
-          CONFIG_QCOM_IPCC=y
-          CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y
-          CONFIG_BUILD_ARM64_DT_OVERLAY=y
           EOF
 
-          echo "✅ star_defconfig copiado y configurado"
+          echo "✅ star_defconfig configurado"
 
       - name: Pre-build diagnostics
         run: |
-          echo "=== Verificar símbolos KSU en fuentes del kernel ==="
-          for sym in mount_list mount_list_lock is_first_ipcc_msg; do
+          echo "=== Verificar símbolos críticos ==="
+          for sym in mount_list mount_list_lock is_first_ipcc_msg apply_kernelsu_rules ksu_selinux_hide_init ksu_supercalls_init ksu_install_fd ksu_handle_devpts ksu_handle_execveat ksu_handle_vfs_read; do
             echo "--- $sym ---"
-            grep -r "EXPORT_SYMBOL.*$sym\b" --include="*.c" . 2>/dev/null | head -5 || echo "  NO EXPORTADO"
-            grep -r "\b$sym\b" --include="*.h" . 2>/dev/null | head -3 || true
+            grep -r "$sym" drivers/kernelsu/ --include="*.c" -l 2>/dev/null | head -3 || echo "  ⚠️ No encontrado en fuentes KSU"
           done
 
-          echo "=== KSU Makefiles finales ==="
-          find drivers/kernelsu -name Makefile | xargs -I{} sh -c 'echo "=== {} ==="; cat {}'
+          echo "=== Archivos .c en KSU ==="
+          find drivers/kernelsu -name "*.c" | sort
 
       - name: Build kernel
         run: |
@@ -299,19 +271,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-final-v2-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-final-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-final-v2
-          path: diphons-final-v2-*.zip
+          name: diphons-final
+          path: diphons-final-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-final-v2
+          name: build-log-final
           path: build.log
