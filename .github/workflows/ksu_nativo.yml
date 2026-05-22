@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo (FINAL v8)
+name: Base diphons KSU nativo (FINAL v9)
 
 on:
   workflow_dispatch:
@@ -109,7 +109,7 @@ jobs:
 
           echo "✅ QGKI fixes aplicados"
 
-      - name: Fix sucompat.c (handlers + struct kprobe pts_unix98_lookup_kp)
+      - name: Fix sucompat.c (handlers + struct kprobe a FILE SCOPE)
         run: |
           find drivers/kernelsu -name "sucompat.c" -type f | while read f; do
             echo "=== Corrigiendo: $f ==="
@@ -119,24 +119,38 @@ jobs:
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g'  "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
 
-            # IMPORTANTE: verificar la DECLARACION de la struct, no el identificador.
-            # El archivo ya tiene enable_kprobe(&pts_unix98_lookup_kp) por eso
-            # grep -q "pts_unix98_lookup_kp" siempre daba true y saltaba la insercion.
+            # Insertar struct kprobe pts_unix98_lookup_kp a FILE SCOPE:
+            # despues del cierre de la funcion pts_unix98_lookup_pre,
+            # NO antes de enable_kprobe (que esta dentro de otra funcion).
+            # Usamos awk con conteo de llaves via gsub para maximo portabilidad.
             if grep -q "struct kprobe pts_unix98_lookup_kp" "$f"; then
-              echo "  struct kprobe pts_unix98_lookup_kp ya declarada, no se inserta"
+              echo "  struct ya declarada a file scope, no se inserta"
             else
-              echo "  Insertando struct kprobe pts_unix98_lookup_kp..."
-              # awk: insertar la struct justo antes de enable_kprobe(&pts_unix98_lookup_kp)
+              echo "  Insertando struct a file scope (despues del cierre de pts_unix98_lookup_pre)..."
               awk '
-                /enable_kprobe\(&pts_unix98_lookup_kp\)/ && !inserted {
+              { print }
+              /static int pts_unix98_lookup_pre/ && !inserted {
+                tracking = 1
+                open_seen = 0
+                depth = 0
+              }
+              tracking {
+                tmp = $0
+                n_open = gsub(/{/, "X", tmp)
+                tmp = $0
+                n_close = gsub(/}/, "X", tmp)
+                depth += n_open - n_close
+                if (n_open > 0) open_seen = 1
+                if (open_seen && depth == 0) {
+                  print ""
                   print "static struct kprobe pts_unix98_lookup_kp = {"
                   print "    .symbol_name = \"pts_unix98_lookup\","
                   print "    .pre_handler = pts_unix98_lookup_pre,"
                   print "};"
-                  print ""
+                  tracking = 0
                   inserted = 1
                 }
-                { print }
+              }
               ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
               echo "  DONE"
             fi
