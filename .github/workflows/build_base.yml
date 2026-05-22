@@ -1,4 +1,4 @@
-name: Base diphons staging - Final (corregido scripts/config)
+name: Base diphons staging - Final v5 (stable)
 
 on:
   workflow_dispatch:
@@ -28,11 +28,16 @@ jobs:
         run: |
           LLVM_BIN=/usr/lib/llvm-19/bin
           mkdir -p clang/bin
-          for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+
+          for tool in \
+            clang clang++ ld.lld llvm-ar llvm-nm \
+            llvm-objcopy llvm-objdump llvm-strip; do
+
             if [ -x "$LLVM_BIN/$tool" ]; then
               ln -sf "$LLVM_BIN/$tool" clang/bin/$tool
             fi
           done
+
           clang/bin/clang --version
 
       - name: Setup GCC toolchain
@@ -40,42 +45,57 @@ jobs:
           git clone --depth=1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
             gcc64
+
           git clone --depth=1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
             gcc32
 
-      - name: Apply QGKI 5.4 fixes (pgtable, nofault, etc.)
+      - name: Apply QGKI 5.4 fixes
         run: |
           echo "=== FIX 1: pgtable.h ==="
+
           grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$f"
           done
 
           echo "=== FIX 2: strncpy_from_user_nofault ==="
+
           grep -rl "strncpy_from_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|strncpy_from_user_nofault|strncpy_from_user|g' "$f"
           done
 
           echo "=== FIX 3: copy_*_nofault ==="
+
           grep -rl "copy_to_kernel_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|copy_to_kernel_nofault|probe_kernel_write|g' "$f"
           done
+
           grep -rl "copy_from_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|copy_from_user_nofault|probe_kernel_read|g' "$f"
           done
+
           grep -rl "copy_to_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
             sed -i 's|copy_to_user_nofault|probe_kernel_write|g' "$f"
           done
 
-          echo "=== FIX 4: pkg_observer.c fsnotify ==="
+      - name: Fix pkg_observer.c fsnotify
+        run: |
           python3 - << 'PYEOF'
           import re, os
+
           pkg = "drivers/kernelsu/manager/pkg_observer.c"
+
           if not os.path.exists(pkg):
               exit(0)
+
           with open(pkg, "r") as f:
               content = f.read()
-          content = content.replace('.handle_inode_event =', '.handle_event =')
+
+          content = content.replace(
+              '.handle_inode_event =',
+              '.handle_event ='
+          )
+
           old_fn = re.compile(
               r'static int (ksu_handle_inode_event|ksu_handle_event)\s*\('
               r'\s*struct fsnotify_mark\s*\*\s*\w+\s*,'
@@ -86,26 +106,40 @@ jobs:
               r'\s*u32\s*\w+\s*\)',
               re.DOTALL
           )
+
           new_fn = (
               'static int ksu_handle_event('
-              'struct fsnotify_group *group, struct inode *inode, '
-              'u32 mask, const void *data, int data_type, '
-              'const struct qstr *file_name, u32 cookie, '
+              'struct fsnotify_group *group, '
+              'struct inode *inode, '
+              'u32 mask, '
+              'const void *data, '
+              'int data_type, '
+              'const struct qstr *file_name, '
+              'u32 cookie, '
               'struct fsnotify_iter_info *iter_info)'
           )
+
           if old_fn.search(content):
               content = old_fn.sub(new_fn, content)
           else:
               content = re.sub(
                   r'static int ksu_handle_inode_event\b',
-                  'static int ksu_handle_event', content
+                  'static int ksu_handle_event',
+                  content
               )
-          content = content.replace('ksu_handle_inode_event', 'ksu_handle_event')
+
+          content = content.replace(
+              'ksu_handle_inode_event',
+              'ksu_handle_event'
+          )
+
           with open(pkg, "w") as f:
               f.write(content)
+
+          print("pkg_observer.c fixed")
           PYEOF
 
-      - name: Fix sucompat.c — corregir nombres
+      - name: Fix sucompat.c
         run: |
           find drivers/kernelsu -name sucompat.c -type f | while read f; do
             sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g' "$f"
@@ -113,14 +147,17 @@ jobs:
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
           done
 
-      - name: Fix app_profile.c (seccomp)
+      - name: Fix app_profile.c
         run: |
           if [ -f drivers/kernelsu/policy/app_profile.c ]; then
-            sed -i '/seccomp_filter_release/d' drivers/kernelsu/policy/app_profile.c
-            sed -i '/atomic_set(&current->seccomp\.filter_count/d' drivers/kernelsu/policy/app_profile.c
+            sed -i '/seccomp_filter_release/d' \
+              drivers/kernelsu/policy/app_profile.c
+
+            sed -i '/atomic_set(&current->seccomp\.filter_count/d' \
+              drivers/kernelsu/policy/app_profile.c
           fi
 
-      - name: Add stubs for missing SuSFS/KSU symbols (ampliado)
+      - name: Add compatibility stubs
         run: |
           cat > drivers/kernelsu/compat_stubs.c << 'EOF'
           #include <linux/kernel.h>
@@ -128,31 +165,41 @@ jobs:
           #include <linux/spinlock.h>
           #include <linux/list.h>
           #include <linux/export.h>
+          #include <linux/errno.h>
 
           void ksu_susfs_disable_sus_su(void) {}
           void ksu_susfs_enable_sus_su(void) {}
+
           EXPORT_SYMBOL(ksu_susfs_disable_sus_su);
           EXPORT_SYMBOL(ksu_susfs_enable_sus_su);
 
           void ksu_handle_stat(void) {}
           void ksu_handle_faccessat(void) {}
+
           EXPORT_SYMBOL(ksu_handle_stat);
           EXPORT_SYMBOL(ksu_handle_faccessat);
 
           DEFINE_SPINLOCK(mount_list_lock);
           LIST_HEAD(mount_list);
+
           EXPORT_SYMBOL(mount_list_lock);
           EXPORT_SYMBOL(mount_list);
 
-          // Stubs preventivos para KSU interno
           void apply_kernelsu_rules(void) {}
+
           void ksu_selinux_hide_init(void) {}
           void ksu_selinux_hide_exit(void) {}
           void ksu_selinux_hide_drop_backup_if_unused(void) {}
+
           int ksu_supercalls_init(void) { return 0; }
           void ksu_supercalls_exit(void) {}
+
           int ksu_install_fd(void) { return 0; }
-          int path_mount(void) { return -ENOSYS; }
+
+          int path_mount(void)
+          {
+              return -ENOSYS;
+          }
 
           EXPORT_SYMBOL(apply_kernelsu_rules);
           EXPORT_SYMBOL(ksu_selinux_hide_init);
@@ -168,21 +215,24 @@ jobs:
             echo 'obj-y += compat_stubs.o' >> drivers/kernelsu/Makefile
           fi
 
-      - name: Configure kernel (base rb2 + fragmento star staging)
+      - name: Configure kernel
         run: |
           wget -O arch/arm64/configs/lahaina_base_defconfig \
             "https://raw.githubusercontent.com/diphons/kernel_xiaomi_sm8350/rb2/arch/arm64/configs/vendor/lahaina-qgki_defconfig"
-          
-          cp arch/arm64/configs/lahaina_base_defconfig arch/arm64/configs/star_defconfig
-          
+
+          cp \
+            arch/arm64/configs/lahaina_base_defconfig \
+            arch/arm64/configs/star_defconfig
+
           if [ -f vendor/xiaomi/star.config ]; then
-            cat vendor/xiaomi/star.config >> arch/arm64/configs/star_defconfig
+            cat vendor/xiaomi/star.config \
+              >> arch/arm64/configs/star_defconfig
           fi
 
-          # IPCC
-          sed -i 's/# CONFIG_QCOM_IPCC is not set/CONFIG_QCOM_IPCC=y/g' arch/arm64/configs/star_defconfig
+          sed -i \
+            's/# CONFIG_QCOM_IPCC is not set/CONFIG_QCOM_IPCC=y/g' \
+            arch/arm64/configs/star_defconfig
 
-          # KSU
           cat >> arch/arm64/configs/star_defconfig << 'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
@@ -201,28 +251,30 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
 
           make O=out ARCH=arm64 star_defconfig
+
           make O=out ARCH=arm64 olddefconfig
 
-          # Compilar scripts/config en el directorio fuente (sin O=out)
-          make scripts
+          make O=out ARCH=arm64 scripts
 
-          # Desactivar múltiples variantes del controlador táctil Focaltech (ruta corregida)
-          scripts/config --file out/.config \
+          out/scripts/config --file out/.config \
             -d TOUCHSCREEN_FTS \
             -d TOUCHSCREEN_FOCALTECH \
             -d FOCALTECH_TOUCHSCREEN \
             -d TOUCHSCREEN_FOCALTECH_FTS_SPI \
-            -d TOUCHSCREEN_FOCALTECH_FTS
+            -d TOUCHSCREEN_FOCALTECH_FTS \
+            -d FTS_TS
 
-          make O=out ARCH=arm64 olddefconfig
+          yes "" | make O=out ARCH=arm64 oldconfig
 
-          # Verificación ampliada
-          echo "=== Verificación táctil ==="
+          echo "=== Verify touchscreen disabled ==="
+
           grep FOCALTECH out/.config || true
           grep FTS out/.config || true
           grep CYTTSP out/.config || true
 
-          make -j$(nproc --all) O=out ARCH=arm64 \
+          make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
@@ -237,12 +289,14 @@ jobs:
 
       - name: Package with AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          git clone --depth=1 \
+            https://github.com/osm0sis/AnyKernel3 \
+            AnyKernel3
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image AnyKernel3/
           else
-            echo "❌ No Image found"
+            echo "No Image found"
             ls out/arch/arm64/boot/ || true
             exit 1
           fi
@@ -251,30 +305,37 @@ jobs:
             cp out/arch/arm64/boot/dtbo.img AnyKernel3/
           fi
 
-          sed -i 's|do.devicecheck=1|do.devicecheck=0|g' AnyKernel3/anykernel.sh
+          sed -i \
+            's|do.devicecheck=1|do.devicecheck=0|g' \
+            AnyKernel3/anykernel.sh
+
           grep -q "^BLOCK=" AnyKernel3/anykernel.sh && \
             sed -i 's|^BLOCK=.*|BLOCK=boot;|g' AnyKernel3/anykernel.sh || \
             echo 'BLOCK=boot;' >> AnyKernel3/anykernel.sh
+
           grep -q "IS_SLOT_DEVICE=" AnyKernel3/anykernel.sh && \
             sed -i 's|IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1;|g' AnyKernel3/anykernel.sh || \
             echo 'IS_SLOT_DEVICE=1;' >> AnyKernel3/anykernel.sh
+
           grep -q "device.name1=" AnyKernel3/anykernel.sh && \
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-staging-final-$(date +%Y%m%d-%H%M).zip . \
+
+          zip -r9 \
+            ../diphons-staging-v5-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-staging-final
-          path: diphons-staging-final-*.zip
+          name: diphons-staging-v5
+          path: diphons-staging-v5-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-staging-final
+          name: build-log-staging-v5
           path: build.log
