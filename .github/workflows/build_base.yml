@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo + fixes + stubs (FINAL)
+name: Base diphons KSU nativo + fixes + stubs (FINAL v2)
 
 on:
   workflow_dispatch:
@@ -108,15 +108,22 @@ jobs:
 
           echo "✅ QGKI fixes aplicados"
 
-      - name: Fix sucompat.c kprobe names (donde sea que esté)
+      - name: Fix sucompat.c kprobe types and names
         run: |
           echo "=== Buscando sucompat.c ==="
           find drivers/kernelsu -name sucompat.c -type f | while read f; do
             echo "  Corrigiendo $f"
+            # Renombrar funciones con prefijo sys_
             sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g' "$f"
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g' "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
-            sed -i 's/\bpts_unix98_lookup_kp\b/pts_unix98_lookup_pre/g' "$f"
+            # Corregir pts_unix98_lookup: debe ser una variable struct kprobe, no una función
+            # Reemplazar pts_unix98_lookup_pre por pts_unix98_lookup_kp en las referencias
+            sed -i 's/\bpts_unix98_lookup_pre\b/pts_unix98_lookup_kp/g' "$f"
+            # Asegurar que existe la declaración de la variable kprobe
+            if ! grep -q "static struct kprobe pts_unix98_lookup_kp" "$f"; then
+              sed -i '/static int pts_unix98_lookup_pre/a static struct kprobe pts_unix98_lookup_kp;' "$f"
+            fi
           done
           echo "✅ sucompat.c corregido"
 
@@ -271,19 +278,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-final-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-final-v2-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-final
-          path: diphons-final-*.zip
+          name: diphons-final-v2
+          path: diphons-final-v2-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-final
+          name: build-log-final-v2
           path: build.log
