@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo (FINAL v4)
+name: Base diphons KSU nativo (FINAL v5)
 
 on:
   workflow_dispatch:
@@ -109,64 +109,73 @@ jobs:
 
           echo "✅ QGKI fixes aplicados"
 
-      - name: Fix sucompat.c (handlers + struct kprobe pts_unix98_lookup_kp)
+      - name: Fix sucompat.c (handlers + insertar struct kprobe pts_unix98_lookup_kp)
         run: |
           find drivers/kernelsu -name "sucompat.c" -type f | while read f; do
             echo "  Corrigiendo $f"
 
-            # Solo renombrar handlers de execve/faccessat/newfstatat
-            # pts_unix98_lookup_kp NO se toca con sed — se maneja abajo con python
+            # Renombrar solo los handlers execve/faccessat/newfstatat
             sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g'       "$f"
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g'  "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
 
-            # Insertar struct kprobe pts_unix98_lookup_kp si no está declarada
-            python3 - "$f" << 'PYEOF'
-          import sys, re
+            # Insertar la struct kprobe faltante usando brace-counting correcto
+            python3 << PYEOF
+          import sys
 
-          path = sys.argv[1]
+          path = "$f"
           with open(path, "r") as fh:
-              content = fh.read()
+              lines = fh.readlines()
 
-          # Si la struct ya existe, no hacer nada
-          if "pts_unix98_lookup_kp" in content:
-              print("  SKIP: pts_unix98_lookup_kp ya declarado")
+          # Si ya existe la struct, no hacer nada
+          if any("pts_unix98_lookup_kp" in l for l in lines):
+              print("  SKIP: pts_unix98_lookup_kp ya declarado en", path)
               sys.exit(0)
 
-          # Buscar el cierre de la función handler pts_unix98_lookup_pre
-          pattern = re.compile(
-              r'(static int pts_unix98_lookup_pre\s*\([^)]*\)\s*\{[^}]*\})',
-              re.DOTALL
+          # Buscar la línea donde empieza pts_unix98_lookup_pre
+          start_line = -1
+          for i, line in enumerate(lines):
+              if "pts_unix98_lookup_pre" in line and "static int" in line:
+                  start_line = i
+                  break
+
+          if start_line == -1:
+              print("  ERROR: no se encontro pts_unix98_lookup_pre en", path)
+              sys.exit(1)
+
+          # Contar llaves desde start_line para encontrar el cierre de la funcion
+          depth = 0
+          found_open = False
+          close_line = -1
+          for i in range(start_line, len(lines)):
+              for ch in lines[i]:
+                  if ch == '{':
+                      depth += 1
+                      found_open = True
+                  elif ch == '}':
+                      depth -= 1
+              if found_open and depth == 0:
+                  close_line = i
+                  break
+
+          if close_line == -1:
+              print("  ERROR: no se encontro cierre de funcion en", path)
+              sys.exit(1)
+
+          struct_decl = (
+              "\n"
+              "static struct kprobe pts_unix98_lookup_kp = {\n"
+              '    .symbol_name = "pts_unix98_lookup",\n'
+              "    .pre_handler = pts_unix98_lookup_pre,\n"
+              "};\n"
           )
-          m = pattern.search(content)
-          if m:
-              insert_point = m.end()
-              prefix = content[:insert_point]
-              suffix = content[insert_point:]
-          else:
-              print("  ⚠️  pts_unix98_lookup_pre no encontrado — insertando al final del bloque de kprobes")
-              # Buscar justo antes del primer enable_kprobe o register_kprobe
-              m2 = re.search(r'(register_kprobe|enable_kprobe)\s*\(', content)
-              if m2:
-                  insert_point = m2.start()
-                  prefix = content[:insert_point]
-                  suffix = content[insert_point:]
-              else:
-                  prefix = content
-                  suffix = ""
 
-          struct_decl = """
+          lines.insert(close_line + 1, struct_decl)
 
-          static struct kprobe pts_unix98_lookup_kp = {
-              .symbol_name = "pts_unix98_lookup",
-              .pre_handler = pts_unix98_lookup_pre,
-          };
-          """
-
-          content = prefix + struct_decl + suffix
           with open(path, "w") as fh:
-              fh.write(content)
-          print("  INSERTED: pts_unix98_lookup_kp struct kprobe")
+              fh.writelines(lines)
+
+          print("  INSERTED pts_unix98_lookup_kp despues de la linea", close_line + 1, "en", path)
           PYEOF
 
             echo "  FIXED $f"
@@ -175,8 +184,6 @@ jobs:
 
       - name: Fix app_profile.c (seccomp 5.4 incompatibility)
         run: |
-          # filter_count no existe en struct seccomp del kernel 5.4
-          # seccomp_filter_release no está exportado en 5.4
           if [ -f drivers/kernelsu/policy/app_profile.c ]; then
             sed -i '/seccomp_filter_release/d' \
               drivers/kernelsu/policy/app_profile.c
@@ -187,14 +194,13 @@ jobs:
 
       - name: Fix su_mount_ns.c (path_mount no existe en kernel 5.4)
         run: |
-          # path_mount() fue introducida en 5.9 — en 5.4 se usa do_mount()
           if [ -f drivers/kernelsu/infra/su_mount_ns.c ]; then
             sed -i 's/\bpath_mount\b/do_mount/g' \
               drivers/kernelsu/infra/su_mount_ns.c
             echo "  FIXED su_mount_ns.c"
           fi
 
-      - name: Fix KSU subdirectory Makefiles (compilar todos los subdirectorios)
+      - name: Fix KSU subdirectory Makefiles
         run: |
           python3 - << 'PYEOF'
           import os
@@ -203,7 +209,7 @@ jobs:
           makefile_path = f"{ksu_root}/Makefile"
 
           if not os.path.exists(makefile_path):
-              print("❌ No hay Makefile en drivers/kernelsu")
+              print("ERROR: No hay Makefile en drivers/kernelsu")
               exit(1)
 
           with open(makefile_path, "r") as f:
@@ -212,7 +218,6 @@ jobs:
           print("=== Makefile actual ===")
           print(content)
 
-          # Detectar subdirectorios con archivos .c
           subdirs = []
           for d in sorted(os.listdir(ksu_root)):
               full = f"{ksu_root}/{d}"
@@ -228,14 +233,14 @@ jobs:
                   lines = [f"obj-y += {f[:-2]}.o" for f in c_files]
                   with open(subdir_mk, "w") as f:
                       f.write("\n".join(lines) + "\n")
-                  print(f"  ✅ Creado {subdir_mk}")
+                  print(f"  Creado {subdir_mk}")
               else:
-                  print(f"  ✓ Ya existe {subdir_mk}")
+                  print(f"  Ya existe {subdir_mk}")
 
               obj_entry = f"obj-y += {sd}/"
               if obj_entry not in content:
                   content += f"\n{obj_entry}\n"
-                  print(f"  ✅ Añadido al Makefile principal: {obj_entry}")
+                  print(f"  Añadido al Makefile principal: {obj_entry}")
 
           with open(makefile_path, "w") as f:
               f.write(content)
@@ -249,9 +254,8 @@ jobs:
       - name: Add compatibility stubs for missing kernel 5.4 symbols
         run: |
           python3 - << 'PYEOF'
-          import subprocess, os
+          import subprocess
 
-          # Verificar si mount_list ya está exportado en el kernel
           result = subprocess.run(
               ["grep", "-r", "EXPORT_SYMBOL.*mount_list", "--include=*.c", "fs/", "kernel/"],
               capture_output=True, text=True
@@ -259,7 +263,6 @@ jobs:
           mount_list_exported = bool(result.stdout.strip())
           print(f"mount_list exportado en kernel: {mount_list_exported}")
 
-          # Verificar si is_first_ipcc_msg ya está en drivers/
           result2 = subprocess.run(
               ["grep", "-r", "is_first_ipcc_msg", "--include=*.c", "drivers/"],
               capture_output=True, text=True
@@ -301,7 +304,6 @@ jobs:
           else:
               print("  → is_first_ipcc_msg ya existe en drivers/, no se añade stub")
 
-          # ksu_install_fd como weak symbol por si setuid_hook no compila
           stub_lines += [
               '/* ksu_install_fd: weak stub de seguridad */',
               'int __attribute__((weak)) ksu_install_fd(void) { return 0; }',
@@ -314,7 +316,6 @@ jobs:
           print("✅ compat_5_4.c generado")
           PYEOF
 
-          # Registrar en Makefile principal
           if ! grep -q "compat_5_4.o" drivers/kernelsu/Makefile; then
             echo 'obj-y += compat_5_4.o' >> drivers/kernelsu/Makefile
             echo "  ✅ compat_5_4.o añadido al Makefile"
@@ -323,13 +324,12 @@ jobs:
       - name: Use functional config as defconfig
         run: |
           if [ ! -f configs/star_defconfig ]; then
-            echo "❌ ERROR: configs/star_defconfig no encontrado"
+            echo "ERROR: configs/star_defconfig no encontrado"
             exit 1
           fi
           mkdir -p arch/arm64/configs
           cp configs/star_defconfig arch/arm64/configs/star_defconfig
 
-          # Desactivar Stack Protector (causa __stack_chk_guard undefined en 5.4 QGKI)
           sed -i 's/^CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/' \
             arch/arm64/configs/star_defconfig
           sed -i 's/^CONFIG_STACKPROTECTOR=y/# CONFIG_STACKPROTECTOR is not set/' \
@@ -337,7 +337,6 @@ jobs:
           sed -i 's/^CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' \
             arch/arm64/configs/star_defconfig
 
-          # Desactivar SUS_MOUNT y TRY_UMOUNT (requieren parche profundo en fs/namespace.c)
           sed -i 's/^CONFIG_KSU_SUSFS_SUS_MOUNT=y/# CONFIG_KSU_SUSFS_SUS_MOUNT is not set/' \
             arch/arm64/configs/star_defconfig
           sed -i 's/^CONFIG_KSU_SUSFS_TRY_UMOUNT=y/# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set/' \
@@ -345,7 +344,6 @@ jobs:
           sed -i 's/^CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y/# CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT is not set/' \
             arch/arm64/configs/star_defconfig
 
-          # Añadir configuraciones KSU/SUSFS necesarias
           cat >> arch/arm64/configs/star_defconfig << 'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
@@ -376,10 +374,18 @@ jobs:
           done
 
           echo ""
+          echo "=== Verificar pts_unix98_lookup_kp en sucompat.c ==="
+          grep -n "pts_unix98_lookup" drivers/kernelsu/sucompat.c 2>/dev/null \
+            || find drivers/kernelsu -name sucompat.c | \
+               xargs grep -n "pts_unix98_lookup" 2>/dev/null \
+            || echo "  sucompat.c no encontrado"
+
+          echo ""
           echo "=== Verificar símbolos críticos en fuentes KSU ==="
           for sym in \
               apply_kernelsu_rules \
-              ksu_selinux_hide_init ksu_selinux_hide_exit ksu_selinux_hide_drop_backup_if_unused \
+              ksu_selinux_hide_init ksu_selinux_hide_exit \
+              ksu_selinux_hide_drop_backup_if_unused \
               ksu_supercalls_init ksu_supercalls_exit \
               ksu_install_fd \
               ksu_handle_devpts ksu_handle_execveat ksu_handle_vfs_read \
@@ -390,12 +396,12 @@ jobs:
             if [ -n "$files" ]; then
               echo "  ✅ $sym -> $files"
             else
-              echo "  ⚠️  $sym -> NO encontrado en fuentes KSU"
+              echo "  ⚠️  $sym -> NO encontrado"
             fi
           done
 
           echo ""
-          echo "=== compat_5_4.c generado ==="
+          echo "=== compat_5_4.c ==="
           cat drivers/kernelsu/compat_5_4.c
 
       - name: Build kernel
@@ -425,7 +431,7 @@ jobs:
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image AnyKernel3/
           else
-            echo "❌ No Image found"
+            echo "No Image found"
             ls out/arch/arm64/boot/ || true
             exit 1
           fi
