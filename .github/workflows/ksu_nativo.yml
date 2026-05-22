@@ -1,0 +1,424 @@
+name: Base diphons KSU nativo (FINAL v3)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            git bc bison flex libssl-dev \
+            make libelf-dev python3 \
+            zip curl wget cpio \
+            clang-19 lld-19 llvm-19
+
+      - name: Setup Clang 19 toolchain
+        run: |
+          LLVM_BIN=/usr/lib/llvm-19/bin
+          mkdir -p clang/bin
+          for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+            if [ -x "$LLVM_BIN/$tool" ]; then
+              ln -sf "$LLVM_BIN/$tool" clang/bin/$tool
+            fi
+          done
+          clang/bin/clang --version
+
+      - name: Setup GCC toolchain
+        run: |
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
+            gcc64
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
+            gcc32
+
+      - name: Apply QGKI 5.4 fixes (pgtable, nofault, fsnotify)
+        run: |
+          echo "=== FIX 1: pgtable.h ==="
+          grep -rl "linux/pgtable.h" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$f"
+            echo "  FIXED $f"
+          done
+
+          echo "=== FIX 2: strncpy_from_user_nofault ==="
+          grep -rl "strncpy_from_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|strncpy_from_user_nofault|strncpy_from_user|g' "$f"
+            echo "  FIXED $f"
+          done
+
+          echo "=== FIX 3: copy_*_nofault ==="
+          grep -rl "copy_to_kernel_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|copy_to_kernel_nofault|probe_kernel_write|g' "$f"
+          done
+          grep -rl "copy_from_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|copy_from_user_nofault|probe_kernel_read|g' "$f"
+          done
+          grep -rl "copy_to_user_nofault" drivers/kernelsu/ 2>/dev/null | while read f; do
+            sed -i 's|copy_to_user_nofault|probe_kernel_write|g' "$f"
+          done
+
+          echo "=== FIX 4: pkg_observer.c fsnotify ==="
+          python3 - << 'PYEOF'
+          import re, os
+          pkg = "drivers/kernelsu/manager/pkg_observer.c"
+          if not os.path.exists(pkg):
+              print("  SKIP: pkg_observer.c no existe")
+              exit(0)
+          with open(pkg, "r") as f:
+              content = f.read()
+          content = content.replace('.handle_inode_event =', '.handle_event =')
+          old_fn = re.compile(
+              r'static int (ksu_handle_inode_event|ksu_handle_event)\s*\('
+              r'\s*struct fsnotify_mark\s*\*\s*\w+\s*,'
+              r'\s*u32\s*\w+\s*,'
+              r'\s*struct inode\s*\*\s*\w+\s*,'
+              r'\s*struct inode\s*\*\s*\w+\s*,'
+              r'\s*const struct qstr\s*\*\s*\w+\s*,'
+              r'\s*u32\s*\w+\s*\)',
+              re.DOTALL
+          )
+          new_fn = (
+              'static int ksu_handle_event('
+              'struct fsnotify_group *group, struct inode *inode, '
+              'u32 mask, const void *data, int data_type, '
+              'const struct qstr *file_name, u32 cookie, '
+              'struct fsnotify_iter_info *iter_info)'
+          )
+          if old_fn.search(content):
+              content = old_fn.sub(new_fn, content)
+          else:
+              content = re.sub(
+                  r'static int ksu_handle_inode_event\b',
+                  'static int ksu_handle_event', content
+              )
+          content = content.replace('ksu_handle_inode_event', 'ksu_handle_event')
+          with open(pkg, "w") as f:
+              f.write(content)
+          print("  FIXED pkg_observer.c")
+          PYEOF
+
+          echo "✅ QGKI fixes aplicados"
+
+      - name: Fix sucompat.c kprobe handler names (solo handlers, NO la struct kprobe)
+        run: |
+          # IMPORTANTE: solo renombramos las funciones *handler*, NO la variable struct kprobe.
+          # pts_unix98_lookup_kp es la struct kprobe — NO se toca.
+          # pts_unix98_lookup_pre es la función handler — ya tiene el nombre correcto en 5.4.
+          find drivers/kernelsu -name "sucompat.c" -type f | while read f; do
+            echo "  Corrigiendo $f"
+            sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g'   "$f"
+            sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g' "$f"
+            sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
+            # pts_unix98_lookup_kp NO se renombra — es struct kprobe, no el handler
+            echo "  FIXED $f"
+          done
+          echo "✅ sucompat.c corregido"
+
+      - name: Fix app_profile.c (seccomp 5.4 incompatibility)
+        run: |
+          # filter_count no existe en struct seccomp del kernel 5.4
+          # seccomp_filter_release no está exportado en 5.4
+          if [ -f drivers/kernelsu/policy/app_profile.c ]; then
+            sed -i '/seccomp_filter_release/d' \
+              drivers/kernelsu/policy/app_profile.c
+            sed -i '/atomic_set(&current->seccomp\.filter_count/d' \
+              drivers/kernelsu/policy/app_profile.c
+            echo "  FIXED app_profile.c"
+          fi
+
+      - name: Fix su_mount_ns.c (path_mount → do_mount para kernel 5.4)
+        run: |
+          if [ -f drivers/kernelsu/infra/su_mount_ns.c ]; then
+            sed -i 's/\bpath_mount\b/do_mount/g' \
+              drivers/kernelsu/infra/su_mount_ns.c
+            echo "  FIXED su_mount_ns.c"
+          fi
+
+      - name: Fix KSU subdirectory Makefiles (compilar todos los subdirectorios)
+        run: |
+          python3 - << 'PYEOF'
+          import os
+
+          ksu_root = "drivers/kernelsu"
+          makefile_path = f"{ksu_root}/Makefile"
+
+          if not os.path.exists(makefile_path):
+              print("❌ No hay Makefile en drivers/kernelsu")
+              exit(1)
+
+          with open(makefile_path, "r") as f:
+              content = f.read()
+
+          print("=== Makefile actual ===")
+          print(content)
+
+          # Detectar subdirectorios con archivos .c
+          subdirs = []
+          for d in sorted(os.listdir(ksu_root)):
+              full = f"{ksu_root}/{d}"
+              if os.path.isdir(full):
+                  c_files = sorted([f for f in os.listdir(full) if f.endswith(".c")])
+                  if c_files:
+                      subdirs.append((d, c_files))
+                      print(f"  Subdir: {d} -> {c_files}")
+
+          for sd, c_files in subdirs:
+              subdir_mk = f"{ksu_root}/{sd}/Makefile"
+              if not os.path.exists(subdir_mk):
+                  lines = [f"obj-y += {f[:-2]}.o" for f in c_files]
+                  with open(subdir_mk, "w") as f:
+                      f.write("\n".join(lines) + "\n")
+                  print(f"  ✅ Creado {subdir_mk}")
+              else:
+                  print(f"  ✓ Ya existe {subdir_mk}")
+
+              obj_entry = f"obj-y += {sd}/"
+              if obj_entry not in content:
+                  content += f"\n{obj_entry}\n"
+                  print(f"  ✅ Añadido al Makefile principal: {obj_entry}")
+
+          with open(makefile_path, "w") as f:
+              f.write(content)
+
+          print("\n=== Makefile final ===")
+          with open(makefile_path) as f:
+              print(f.read())
+          PYEOF
+          echo "✅ KSU Makefiles corregidos"
+
+      - name: Add compatibility stubs for missing kernel 5.4 symbols
+        run: |
+          # Estos stubs cubren símbolos que no existen en kernel 5.4 QGKI
+          # o que SUSFS/KSU espera exportados pero el kernel base no exporta.
+          # NO incluimos mount_list/mount_list_lock si SUSFS ya los define en fs/namespace.c.
+          # NO incluimos is_first_ipcc_msg si CONFIG_QCOM_IPCC=y ya compila el driver real.
+
+          python3 - << 'PYEOF'
+          import subprocess, os
+
+          # Verificar si mount_list ya está exportado en el kernel
+          result = subprocess.run(
+              ["grep", "-r", "EXPORT_SYMBOL.*mount_list", "--include=*.c", "fs/", "kernel/"],
+              capture_output=True, text=True
+          )
+          mount_list_exported = bool(result.stdout.strip())
+          print(f"mount_list exportado en kernel: {mount_list_exported}")
+
+          # Verificar si is_first_ipcc_msg ya está en el kernel
+          result2 = subprocess.run(
+              ["grep", "-r", "is_first_ipcc_msg", "--include=*.c", "drivers/"],
+              capture_output=True, text=True
+          )
+          ipcc_in_kernel = bool(result2.stdout.strip())
+          print(f"is_first_ipcc_msg en drivers/: {ipcc_in_kernel}")
+
+          stub_lines = [
+              '#include <linux/kernel.h>',
+              '#include <linux/spinlock.h>',
+              '#include <linux/list.h>',
+              '#include <linux/errno.h>',
+              '#include <linux/types.h>',
+              '#include <linux/export.h>',
+              '',
+          ]
+
+          if not mount_list_exported:
+              print("  → Añadiendo stubs de mount_list/mount_list_lock")
+              stub_lines += [
+                  '/* mount_list: no exportado en este kernel base */',
+                  'DEFINE_SPINLOCK(mount_list_lock);',
+                  'LIST_HEAD(mount_list);',
+                  'EXPORT_SYMBOL(mount_list_lock);',
+                  'EXPORT_SYMBOL(mount_list);',
+                  '',
+              ]
+          else:
+              print("  → mount_list ya exportado, no se añade stub")
+
+          if not ipcc_in_kernel:
+              print("  → Añadiendo stub de is_first_ipcc_msg")
+              stub_lines += [
+                  '/* is_first_ipcc_msg: driver QCOM IPCC no disponible */',
+                  'bool is_first_ipcc_msg(void) { return false; }',
+                  'EXPORT_SYMBOL(is_first_ipcc_msg);',
+                  '',
+              ]
+          else:
+              print("  → is_first_ipcc_msg ya existe en drivers/, no se añade stub")
+
+          # Símbolos KSU que pueden faltar si los subdirectorios no compilan
+          # (solo como red de seguridad; lo ideal es que compilen sus propios archivos)
+          stub_lines += [
+              '/* ksu_install_fd: stub de seguridad si setuid_hook no compila */',
+              '#ifndef ksu_install_fd_defined',
+              'int __attribute__((weak)) ksu_install_fd(void) { return 0; }',
+              'EXPORT_SYMBOL(ksu_install_fd);',
+              '#endif',
+          ]
+
+          with open("drivers/kernelsu/compat_5_4.c", "w") as f:
+              f.write("\n".join(stub_lines) + "\n")
+
+          print("✅ compat_5_4.c generado")
+          PYEOF
+
+          # Registrar en Makefile principal
+          if ! grep -q "compat_5_4.o" drivers/kernelsu/Makefile; then
+            echo 'obj-y += compat_5_4.o' >> drivers/kernelsu/Makefile
+            echo "  ✅ compat_5_4.o añadido al Makefile"
+          fi
+
+      - name: Use functional config as defconfig
+        run: |
+          if [ ! -f configs/star_defconfig ]; then
+            echo "❌ ERROR: configs/star_defconfig no encontrado"
+            exit 1
+          fi
+          mkdir -p arch/arm64/configs
+          cp configs/star_defconfig arch/arm64/configs/star_defconfig
+
+          # Desactivar Stack Protector explícitamente (causa __stack_chk_guard en 5.4 QGKI)
+          sed -i 's/^CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/' \
+            arch/arm64/configs/star_defconfig
+          sed -i 's/^CONFIG_STACKPROTECTOR=y/# CONFIG_STACKPROTECTOR is not set/' \
+            arch/arm64/configs/star_defconfig
+          sed -i 's/^CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' \
+            arch/arm64/configs/star_defconfig
+
+          # Desactivar SUS_MOUNT y TRY_UMOUNT si no hay parche en fs/namespace.c
+          sed -i 's/^CONFIG_KSU_SUSFS_SUS_MOUNT=y/# CONFIG_KSU_SUSFS_SUS_MOUNT is not set/' \
+            arch/arm64/configs/star_defconfig
+          sed -i 's/^CONFIG_KSU_SUSFS_TRY_UMOUNT=y/# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set/' \
+            arch/arm64/configs/star_defconfig
+          sed -i 's/^CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y/# CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT is not set/' \
+            arch/arm64/configs/star_defconfig
+
+          # Añadir configuraciones KSU/SUSFS necesarias
+          cat >> arch/arm64/configs/star_defconfig << 'EOF'
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KPM=y
+          CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y
+          CONFIG_BUILD_ARM64_DT_OVERLAY=y
+          EOF
+
+          echo "✅ star_defconfig configurado"
+
+      - name: Pre-build diagnostics
+        run: |
+          echo "=== Archivos .c en KSU ==="
+          find drivers/kernelsu -name "*.c" | sort
+
+          echo ""
+          echo "=== KSU Makefiles ==="
+          find drivers/kernelsu -name "Makefile" | sort | while read mk; do
+            echo "--- $mk ---"
+            cat "$mk"
+          done
+
+          echo ""
+          echo "=== Verificar símbolos críticos en fuentes KSU ==="
+          for sym in \
+              apply_kernelsu_rules \
+              ksu_selinux_hide_init ksu_selinux_hide_exit ksu_selinux_hide_drop_backup_if_unused \
+              ksu_supercalls_init ksu_supercalls_exit \
+              ksu_install_fd \
+              ksu_handle_devpts ksu_handle_execveat ksu_handle_vfs_read \
+              mount_list mount_list_lock \
+              is_first_ipcc_msg; do
+            files=$(grep -rl "\b${sym}\b" drivers/kernelsu/ --include="*.c" 2>/dev/null | tr '\n' ' ')
+            if [ -n "$files" ]; then
+              echo "  ✅ $sym -> $files"
+            else
+              echo "  ⚠️  $sym -> NO encontrado en fuentes KSU (cubierto por stub o falta archivo)"
+            fi
+          done
+
+          echo ""
+          echo "=== compat_5_4.c generado ==="
+          cat drivers/kernelsu/compat_5_4.c
+
+      - name: Build kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+
+          make O=out ARCH=arm64 star_defconfig
+          make O=out ARCH=arm64 olddefconfig
+
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            2>&1 | tee build.log
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image AnyKernel3/
+          else
+            echo "❌ No Image found"
+            ls out/arch/arm64/boot/ || true
+            exit 1
+          fi
+
+          if [ -f out/arch/arm64/boot/dtbo.img ]; then
+            cp out/arch/arm64/boot/dtbo.img AnyKernel3/
+          fi
+
+          sed -i 's|do.devicecheck=1|do.devicecheck=0|g' AnyKernel3/anykernel.sh
+
+          grep -q "^BLOCK=" AnyKernel3/anykernel.sh \
+            && sed -i 's|^BLOCK=.*|BLOCK=boot;|g' AnyKernel3/anykernel.sh \
+            || echo 'BLOCK=boot;' >> AnyKernel3/anykernel.sh
+
+          grep -q "IS_SLOT_DEVICE=" AnyKernel3/anykernel.sh \
+            && sed -i 's|IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1;|g' AnyKernel3/anykernel.sh \
+            || echo 'IS_SLOT_DEVICE=1;' >> AnyKernel3/anykernel.sh
+
+          grep -q "device.name1=" AnyKernel3/anykernel.sh \
+            && sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
+
+          cd AnyKernel3
+          zip -r9 ../diphons-ksu-$(date +%Y%m%d-%H%M).zip . \
+            -x ".git*" -x "*.md"
+
+      - name: Upload kernel zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: diphons-ksu
+          path: diphons-ksu-*.zip
+          retention-days: 7
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
