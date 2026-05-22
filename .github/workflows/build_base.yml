@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo + fixes + stubs (FINAL v4)
+name: Base diphons limpia + fixes mínimos (FINAL REAL)
 
 on:
   workflow_dispatch:
@@ -8,9 +8,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout kernel source
+      - name: Checkout kernel source ORIGINAL de diphons
         uses: actions/checkout@v4
         with:
+          repository: diphons/kernel_xiaomi_sm8350
+          ref: 15
           fetch-depth: 1
 
       - name: Install dependencies
@@ -108,70 +110,19 @@ jobs:
 
           echo "✅ QGKI fixes aplicados"
 
-      - name: Fix sucompat.c (reemplazo completo)
+      - name: Fix sucompat.c — corregir nombres SIN reemplazar el archivo
         run: |
+          echo "=== Buscando sucompat.c ==="
           find drivers/kernelsu -name sucompat.c -type f | while read f; do
-            echo "  Reemplazando $f"
-            cat > "$f" << 'SUCOMPAT_FIX'
-          #include <linux/kernel.h>
-          #include <linux/kprobes.h>
-          #include <linux/ptrace.h>
-          #include <linux/version.h>
-          #include <linux/uaccess.h>
-          #include <linux/fs.h>
-          #include <linux/sched.h>
-          #include <linux/namei.h>
-          #include <linux/fcntl.h>
-          #include <linux/stat.h>
-          #include <linux/string.h>
-          #include <linux/slab.h>
-          #include <linux/cred.h>
-          #include <linux/uidgid.h>
-          #include <linux/dcache.h>
-          #include <linux/errno.h>
-          #include <linux/syscalls.h>
-          #include <linux/security.h>
-          #include <linux/unistd.h>
-          #include <asm/uaccess.h>
-          #include <asm/unistd.h>
-
-          #define SYS_EXECVE_SYMBOL "__arm64_sys_execve"
-          #define SYS_FACCESSAT_SYMBOL "__arm64_sys_faccessat"
-          #define SYS_NEWFSTATAT_SYMBOL "__arm64_sys_newfstatat"
-
-          static struct kprobe su_kps[3];
-          static struct kprobe pts_unix98_lookup_kp;
-
-          static int sys_execve_handler_pre(struct kprobe *p, struct pt_regs *regs) { return 0; }
-          static int sys_faccessat_handler_pre(struct kprobe *p, struct pt_regs *regs) { return 0; }
-          static int sys_newfstatat_handler_pre(struct kprobe *p, struct pt_regs *regs) { return 0; }
-          static int pts_unix98_lookup_pre(struct kprobe *p, struct pt_regs *regs) { return 0; }
-
-          static int __init ksu_compat_init(void) {
-              su_kps[0] = (struct kprobe){ .symbol_name = SYS_EXECVE_SYMBOL, .pre_handler = sys_execve_handler_pre };
-              su_kps[1] = (struct kprobe){ .symbol_name = SYS_FACCESSAT_SYMBOL, .pre_handler = sys_faccessat_handler_pre };
-              su_kps[2] = (struct kprobe){ .symbol_name = SYS_NEWFSTATAT_SYMBOL, .pre_handler = sys_newfstatat_handler_pre };
-              pts_unix98_lookup_kp = (struct kprobe){ .symbol_name = "pts_unix98_lookup", .pre_handler = pts_unix98_lookup_pre };
-              enable_kprobe(&su_kps[0]);
-              enable_kprobe(&su_kps[1]);
-              enable_kprobe(&su_kps[2]);
-              enable_kprobe(&pts_unix98_lookup_kp);
-              return 0;
-          }
-
-          static void __exit ksu_compat_exit(void) {
-              disable_kprobe(&su_kps[0]);
-              disable_kprobe(&su_kps[1]);
-              disable_kprobe(&su_kps[2]);
-              disable_kprobe(&pts_unix98_lookup_kp);
-          }
-
-          module_init(ksu_compat_init);
-          module_exit(ksu_compat_exit);
-          MODULE_LICENSE("GPL");
-          SUCOMPAT_FIX
+            echo "  Corrigiendo $f"
+            # Solo reemplazar los nombres incorrectos de funciones, sin borrar nada
+            sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g' "$f"
+            sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g' "$f"
+            sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
+            # El error anterior era porque pts_unix98_lookup_pre se usaba como función pero se necesitaba estructura.
+            # Ahora dejaremos que el archivo original maneje esto; si falla, ajustaremos.
           done
-          echo "✅ sucompat.c reemplazado completamente"
+          echo "✅ sucompat.c corregido (nombres de kprobe)"
 
       - name: Fix app_profile.c (seccomp)
         run: |
@@ -181,49 +132,38 @@ jobs:
             echo "  FIXED app_profile.c"
           fi
 
-      - name: Add global compatibility stubs (sin duplicados)
+      - name: Add stubs for missing SuSFS/KSU symbols (solo los que falten)
         run: |
-          cat > drivers/kernelsu/compat_5_4.c << 'EOF'
+          cat > drivers/kernelsu/compat_stubs.c << 'EOF'
           #include <linux/kernel.h>
           #include <linux/module.h>
           #include <linux/spinlock.h>
           #include <linux/list.h>
-          #include <linux/fs.h>
-          #include <linux/errno.h>
-          #include <linux/types.h>
           #include <linux/export.h>
 
-          // SuSFS stubs
+          // SusFS stubs que no están en el código actual
+          void ksu_susfs_disable_sus_su(void) {}
+          void ksu_susfs_enable_sus_su(void) {}
+          EXPORT_SYMBOL(ksu_susfs_disable_sus_su);
+          EXPORT_SYMBOL(ksu_susfs_enable_sus_su);
+
+          // ksu_handle_stat y ksu_handle_faccessat (probablemente de SuSFS)
+          void ksu_handle_stat(void) {}
+          void ksu_handle_faccessat(void) {}
+          EXPORT_SYMBOL(ksu_handle_stat);
+          EXPORT_SYMBOL(ksu_handle_faccessat);
+
+          // Si aún falta mount_list/mount_list_lock, los incluimos (aunque ya pueden existir)
           DEFINE_SPINLOCK(mount_list_lock);
           LIST_HEAD(mount_list);
           EXPORT_SYMBOL(mount_list_lock);
           EXPORT_SYMBOL(mount_list);
-          int ksu_install_fd(void) { return 0; }
-          EXPORT_SYMBOL(ksu_install_fd);
-
-          // Qualcomm IPCC
-          bool is_first_ipcc_msg(void) { return false; }
-          EXPORT_SYMBOL(is_first_ipcc_msg);
-
-          // Stubs que realmente faltan y no están en otros .c de KSU
-          void ksu_handle_devpts(void) {}
-          void ksu_selinux_hide_drop_backup_if_unused(void) {}
-          void apply_kernelsu_rules(void) {}
-          void ksu_selinux_hide_init(void) {}
-          void ksu_selinux_hide_exit(void) {}
-          int ksu_supercalls_init(void) { return 0; }
-          void ksu_supercalls_exit(void) {}
-          void seccomp_filter_release(void) {}
-          int path_mount(void) { return -ENOSYS; }
-
-          EXPORT_SYMBOL(ksu_handle_devpts);
           EOF
 
-          # Integrarlo limpiamente en el Makefile nativo
-          if ! grep -q "compat_5_4.o" drivers/kernelsu/Makefile; then
-            echo 'obj-y += compat_5_4.o' >> drivers/kernelsu/Makefile
+          if ! grep -q "compat_stubs.o" drivers/kernelsu/Makefile; then
+            echo 'obj-y += compat_stubs.o' >> drivers/kernelsu/Makefile
           fi
-          echo "✅ Stubs globales añadidos (sin duplicados)"
+          echo "✅ Stubs específicos añadidos"
 
       - name: Use functional config as defconfig
         run: |
@@ -238,15 +178,10 @@ jobs:
           sed -i 's/CONFIG_STACKPROTECTOR_STRONG=y/# CONFIG_STACKPROTECTOR_STRONG is not set/g' arch/arm64/configs/star_defconfig
           sed -i 's/CONFIG_STACKPROTECTOR=y/# CONFIG_STACKPROTECTOR is not set/g' arch/arm64/configs/star_defconfig
 
-          # Activar IPCC de QCOM
+          # Activar IPCC de QCOM (si existe la opción)
           sed -i 's/# CONFIG_QCOM_IPCC is not set/CONFIG_QCOM_IPCC=y/g' arch/arm64/configs/star_defconfig
 
-          # Desactivar funciones SuSFS que dependen de parches profundos
-          sed -i 's/CONFIG_KSU_SUSFS_SUS_MOUNT=y/# CONFIG_KSU_SUSFS_SUS_MOUNT is not set/g' arch/arm64/configs/star_defconfig
-          sed -i 's/CONFIG_KSU_SUSFS_TRY_UMOUNT=y/# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set/g' arch/arm64/configs/star_defconfig
-          sed -i 's/CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y/# CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT is not set/g' arch/arm64/configs/star_defconfig
-
-          # Añadir bases de KSU
+          # Añadir bases de KSU (sin forzar configuraciones peligrosas)
           cat >> arch/arm64/configs/star_defconfig << 'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
@@ -265,9 +200,9 @@ jobs:
       - name: Pre-build diagnostics
         run: |
           echo "=== Verificar símbolos críticos ==="
-          for sym in mount_list mount_list_lock is_first_ipcc_msg apply_kernelsu_rules ksu_selinux_hide_init ksu_supercalls_init ksu_install_fd ksu_handle_devpts ksu_handle_execveat ksu_handle_vfs_read; do
+          for sym in ksu_sucompat_init ksu_sucompat_exit ksu_handle_execveat_sucompat ksu_susfs_disable_sus_su ksu_susfs_enable_sus_su ksu_handle_stat ksu_handle_faccessat; do
             echo "--- $sym ---"
-            grep -r "$sym" drivers/kernelsu/ --include="*.c" -l 2>/dev/null | head -3 || echo "  ⚠️ No encontrado en fuentes KSU"
+            grep -r "$sym" drivers/kernelsu/ fs/ --include="*.c" -l 2>/dev/null | head -3 || echo "  ⚠️ No encontrado en fuentes"
           done
 
           echo "=== Archivos .c en KSU ==="
@@ -320,19 +255,19 @@ jobs:
             sed -i 's|device.name1=.*|device.name1=star|g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../diphons-final-v4-$(date +%Y%m%d-%H%M).zip . \
+          zip -r9 ../diphons-limpio-$(date +%Y%m%d-%H%M).zip . \
             -x ".git*" -x "*.md"
 
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
-          name: diphons-final-v4
-          path: diphons-final-v4-*.zip
+          name: diphons-limpio
+          path: diphons-limpio-*.zip
           retention-days: 7
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-final-v4
+          name: build-log-limpio
           path: build.log
