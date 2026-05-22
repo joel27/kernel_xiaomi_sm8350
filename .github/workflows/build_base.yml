@@ -1,4 +1,4 @@
-name: Base diphons limpia + fixes mínimos (FINAL REAL)
+name: Base diphons limpia + fixes mínimos (FINAL REAL v2)
 
 on:
   workflow_dispatch:
@@ -43,6 +43,16 @@ jobs:
           git clone --depth=1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
             gcc32
+
+      - name: Download star_defconfig from your fork
+        run: |
+          wget -O configs/star_defconfig \
+            "https://raw.githubusercontent.com/joel27/kernel_xiaomi_sm8350/15/configs/star_defconfig"
+          if [ ! -f configs/star_defconfig ]; then
+            echo "❌ ERROR: No se pudo descargar configs/star_defconfig"
+            exit 1
+          fi
+          echo "✅ star_defconfig descargado correctamente"
 
       - name: Apply QGKI 5.4 fixes (pgtable, nofault, etc.)
         run: |
@@ -115,12 +125,9 @@ jobs:
           echo "=== Buscando sucompat.c ==="
           find drivers/kernelsu -name sucompat.c -type f | while read f; do
             echo "  Corrigiendo $f"
-            # Solo reemplazar los nombres incorrectos de funciones, sin borrar nada
             sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g' "$f"
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g' "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
-            # El error anterior era porque pts_unix98_lookup_pre se usaba como función pero se necesitaba estructura.
-            # Ahora dejaremos que el archivo original maneje esto; si falla, ajustaremos.
           done
           echo "✅ sucompat.c corregido (nombres de kprobe)"
 
@@ -132,7 +139,7 @@ jobs:
             echo "  FIXED app_profile.c"
           fi
 
-      - name: Add stubs for missing SuSFS/KSU symbols (solo los que falten)
+      - name: Add stubs for missing SuSFS/KSU symbols
         run: |
           cat > drivers/kernelsu/compat_stubs.c << 'EOF'
           #include <linux/kernel.h>
@@ -147,13 +154,13 @@ jobs:
           EXPORT_SYMBOL(ksu_susfs_disable_sus_su);
           EXPORT_SYMBOL(ksu_susfs_enable_sus_su);
 
-          // ksu_handle_stat y ksu_handle_faccessat (probablemente de SuSFS)
+          // ksu_handle_stat y ksu_handle_faccessat
           void ksu_handle_stat(void) {}
           void ksu_handle_faccessat(void) {}
           EXPORT_SYMBOL(ksu_handle_stat);
           EXPORT_SYMBOL(ksu_handle_faccessat);
 
-          // Si aún falta mount_list/mount_list_lock, los incluimos (aunque ya pueden existir)
+          // mount_list y mount_list_lock (por si acaso)
           DEFINE_SPINLOCK(mount_list_lock);
           LIST_HEAD(mount_list);
           EXPORT_SYMBOL(mount_list_lock);
@@ -167,10 +174,6 @@ jobs:
 
       - name: Use functional config as defconfig
         run: |
-          if [ ! -f configs/star_defconfig ]; then
-            echo "❌ ERROR: configs/star_defconfig no encontrado"
-            exit 1
-          fi
           mkdir -p arch/arm64/configs
           cp configs/star_defconfig arch/arm64/configs/star_defconfig
 
