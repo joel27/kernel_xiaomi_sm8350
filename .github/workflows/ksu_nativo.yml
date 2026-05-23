@@ -1,4 +1,4 @@
-name: Base diphons KSU nativo (FINAL v9)
+name: Base diphons KSU nativo (FINAL v10)
 
 on:
   workflow_dispatch:
@@ -114,31 +114,23 @@ jobs:
           find drivers/kernelsu -name "sucompat.c" -type f | while read f; do
             echo "=== Corrigiendo: $f ==="
 
-            # Renombrar handlers execve/faccessat/newfstatat
             sed -i 's/\bexecve_handler_pre\b/sys_execve_handler_pre/g'       "$f"
             sed -i 's/\bfaccessat_handler_pre\b/sys_faccessat_handler_pre/g'  "$f"
             sed -i 's/\bnewfstatat_handler_pre\b/sys_newfstatat_handler_pre/g' "$f"
 
-            # Insertar struct kprobe pts_unix98_lookup_kp a FILE SCOPE:
-            # despues del cierre de la funcion pts_unix98_lookup_pre,
-            # NO antes de enable_kprobe (que esta dentro de otra funcion).
-            # Usamos awk con conteo de llaves via gsub para maximo portabilidad.
+            # Insertar struct kprobe DESPUES del cierre de pts_unix98_lookup_pre
+            # (file scope, visible para init Y exit)
             if grep -q "struct kprobe pts_unix98_lookup_kp" "$f"; then
-              echo "  struct ya declarada a file scope, no se inserta"
+              echo "  struct ya declarada, saltando"
             else
-              echo "  Insertando struct a file scope (despues del cierre de pts_unix98_lookup_pre)..."
               awk '
               { print }
               /static int pts_unix98_lookup_pre/ && !inserted {
-                tracking = 1
-                open_seen = 0
-                depth = 0
+                tracking = 1; open_seen = 0; depth = 0
               }
               tracking {
-                tmp = $0
-                n_open = gsub(/{/, "X", tmp)
-                tmp = $0
-                n_close = gsub(/}/, "X", tmp)
+                tmp = $0; n_open = gsub(/{/, "X", tmp)
+                tmp = $0; n_close = gsub(/}/, "X", tmp)
                 depth += n_open - n_close
                 if (n_open > 0) open_seen = 1
                 if (open_seen && depth == 0) {
@@ -147,15 +139,14 @@ jobs:
                   print "    .symbol_name = \"pts_unix98_lookup\","
                   print "    .pre_handler = pts_unix98_lookup_pre,"
                   print "};"
-                  tracking = 0
-                  inserted = 1
+                  tracking = 0; inserted = 1
                 }
               }
               ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
-              echo "  DONE"
+              echo "  INSERTED pts_unix98_lookup_kp a file scope"
             fi
 
-            echo "  --- Verificacion pts_unix98_lookup ---"
+            echo "  --- Verificacion ---"
             grep -n "pts_unix98_lookup" "$f"
           done
           echo "✅ sucompat.c corregido"
@@ -178,10 +169,10 @@ jobs:
             echo "  FIXED su_mount_ns.c"
           fi
 
-      - name: Fix KSU subdirectory Makefiles
+      - name: Fix KSU subdirectory Makefiles (sin duplicar entradas existentes)
         run: |
           python3 - << 'PYEOF'
-          import os
+          import os, re
 
           ksu_root = "drivers/kernelsu"
           makefile_path = f"{ksu_root}/Makefile"
@@ -203,10 +194,12 @@ jobs:
                   c_files = sorted([fn for fn in os.listdir(full) if fn.endswith(".c")])
                   if c_files:
                       subdirs.append((d, c_files))
-                      print(f"  Subdir: {d} -> {c_files}")
+                      print(f"  Subdir con .c: {d} -> {c_files}")
 
           for sd, c_files in subdirs:
               subdir_mk = f"{ksu_root}/{sd}/Makefile"
+
+              # Crear Makefile del subdir solo si no existe
               if not os.path.exists(subdir_mk):
                   obj_lines = [f"obj-y += {fn[:-2]}.o" for fn in c_files]
                   with open(subdir_mk, "w") as f:
@@ -215,10 +208,21 @@ jobs:
               else:
                   print(f"  Ya existe {subdir_mk}")
 
-              obj_entry = f"obj-y += {sd}/"
-              if obj_entry not in content:
-                  content += f"\n{obj_entry}\n"
-                  print(f"  Añadido al Makefile principal: {obj_entry}")
+              # CRITICO: verificar si el subdir ya esta referenciado de CUALQUIER forma
+              # No solo buscar "obj-y += sd/" exacto — puede estar como
+              # "obj-$(CONFIG_KSU) += sd/" o con tabs o con el nombre de archivo directo
+              already_in = bool(re.search(
+                  r'(?:obj-[^\s]+=\s*)(?:[^\s]*/)?' + re.escape(sd) + r'[/\s]',
+                  content
+              )) or (sd + "/" in content) or any(
+                  fn in content for fn in c_files
+              )
+
+              if already_in:
+                  print(f"  SKIP: {sd} ya referenciado en Makefile (no se duplica)")
+              else:
+                  content += f"\nobj-y += {sd}/\n"
+                  print(f"  Añadido: obj-y += {sd}/")
 
           with open(makefile_path, "w") as f:
               f.write(content)
@@ -227,7 +231,7 @@ jobs:
           with open(makefile_path) as f:
               print(f.read())
           PYEOF
-          echo "✅ KSU Makefiles corregidos"
+          echo "✅ KSU Makefiles corregidos (sin duplicados)"
 
       - name: Add compatibility stubs for missing kernel 5.4 symbols
         run: |
